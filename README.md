@@ -1,3 +1,33 @@
+# DEMO SCRIPT
+
+"AI agents can get stuck. Counterwhorl demonstrates how two independent agents can recover from a failure without losing state or conflicting with each other.
+
+**[Field: Both]**
+
+This sphere represents the possible pointing directions of a satellite camera.
+
+The hairy-ball theorem tells us that a continuous tangent vector field on a sphere must vanish somewhere. Our Navigator has a blind spot opposite its target, but our Rescuer uses a complementary field that remains available.
+
+**[Field: Off → Break Navigator]**
+
+Let's force Navigator into that blind spot.
+
+**[Let recovery complete.]**
+
+It recovers automatically. Navigator requests help through Agent Relay, Terse safely transfers control, and Rescuer moves it out of the blind spot before Navigator finishes.
+
+**[Change Target → Oblique → Retarget active mission → Break Navigator]**
+
+And this isn't hard-coded to the poles. We can choose an entirely different target, force the same failure, and recover again.
+
+**[Point to the completed mission record.]**
+
+Both Terse and Agent Relay are self-hosted locally. These are real agent messages, real persisted state changes, and actual autonomous recoveries.
+
+Counterwhorl shows how complementary agents can overcome limitations that a single controller cannot."
+
+
+
 # COUNTERWHORL
 
 Durable satellite-camera steering on the unit sphere, with a Navigator that stalls at the antipode and a complementary Rescuer that temporarily takes control.
