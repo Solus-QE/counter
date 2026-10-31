@@ -103,7 +103,7 @@ export interface Connection { link: RelayLink; token: string; stop: ()=>Promise<
 /** Connects this process's own Relay identity: live listeners plus durable inbox replay. */
 export async function connect(config: AgentConfig,options: {ack?: (outcome: IngestOutcome)=>boolean}={}): Promise<Connection> {
   const log=logger(config.role);
-  const relay=new AgentRelay({workspaceKey:config.workspaceKey,retryPolicy:{maxRetries:0},onError:()=>log("Relay transport error")});
+  const relay=new AgentRelay({workspaceKey:config.workspaceKey,baseUrl:config.relayBaseUrl,retryPolicy:{maxRetries:0},onError:()=>log("Relay transport error")});
   const self=await withRelayRetry(()=>client(relay,config),log,Infinity);
   const resolve=async(name: string): Promise<Identity>=>{
     const agent=await withRelayRetry(()=>self.agents.get(name),log,Infinity);

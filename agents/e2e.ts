@@ -59,6 +59,7 @@ async function isolatedStack(): Promise<string> {
     () =>
       AgentRelay.createWorkspace({
         name: `counterwhorl-e2e-${crypto.randomUUID().slice(0, 8)}`,
+        baseUrl: process.env.RELAY_BASE_URL,
       }),
     log,
   );
@@ -394,7 +395,7 @@ try {
   // then verify their source identities and exact mission/handoff contents.
   const workspaceKey =
     agentEnv.RELAY_WORKSPACE_KEY ?? loadConfig("navigator").workspaceKey;
-  const auditRelay = new AgentRelay({ workspaceKey, sessionRef: "", retryPolicy: {maxRetries:0} });
+  const auditRelay = new AgentRelay({ workspaceKey, baseUrl: process.env.RELAY_BASE_URL, sessionRef: "", retryPolicy: {maxRetries:0} });
   try {
     for (const [role, id, type] of [
       ["rescuer", grantRequest.messageId, "recovery_request"],

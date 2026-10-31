@@ -38,6 +38,8 @@ export interface AgentConfig {
   apiUrl: string;
   /** Terse poll interval for discovering missions and noticing out-of-band changes. */
   pollMs: number;
+  /** Self-hosted Relaycast engine origin; undefined uses hosted cast.agentrelay.com. */
+  relayBaseUrl?: string;
   inboxPollMs: number;
   navigatorStepMs: number;
   rescuerStepMs: number;
@@ -69,6 +71,7 @@ export function loadConfig(role: Role): AgentConfig {
     },
     apiUrl: env("COUNTERWHORL_API_URL")??`http://127.0.0.1:${env("PORT")??3001}`,
     pollMs: num("AGENT_POLL_MS",500),
+    relayBaseUrl: env("RELAY_BASE_URL"),
     inboxPollMs: num("AGENT_INBOX_POLL_MS",30000),
     navigatorStepMs: num("NAVIGATOR_STEP_MS",750),
     rescuerStepMs: num("RESCUER_STEP_MS",300),

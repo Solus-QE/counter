@@ -51,10 +51,12 @@ if (process.env.COUNTERWHORL_DEBUG_RELAY === "1") {
 // Isolate real-service checks from the workspace used by concurrent agent workers.
 const bootstrap = await AgentRelay.createWorkspace({
   name: `counterwhorl-test-${crypto.randomUUID().slice(0, 8)}`,
+  baseUrl: process.env.RELAY_BASE_URL,
 });
 const workspaceKey = bootstrap.workspaceKey!;
 const relay = new AgentRelay({
   workspaceKey,
+  baseUrl: process.env.RELAY_BASE_URL,
   onError: () => console.error("Smoke Relay transport error"),
 });
 const dir = await mkdtemp(join(tmpdir(), "counterwhorl-relay-"));

@@ -65,6 +65,8 @@ export class RelayBridge {
     try {
       this.relay = new AgentRelay({
         workspaceKey: this.workspaceKey,
+        // Self-hosted Relaycast engine when set; hosted cast.agentrelay.com otherwise.
+        baseUrl: process.env.RELAY_BASE_URL,
         // Persist explicit metadata ourselves; disable ambient per-process injection.
         sessionRef: "",
         // Polling owns retries and must preserve the server's Retry-After deadline.

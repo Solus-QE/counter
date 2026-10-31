@@ -6,9 +6,10 @@ export async function setupRelay(store: Store): Promise<void> {
   const workspaceKey =
     process.env.RELAY_WORKSPACE_KEY ?? store.setting("relay.workspaceKey");
   const relay = workspaceKey
-    ? new AgentRelay({ workspaceKey })
+    ? new AgentRelay({ workspaceKey, baseUrl: process.env.RELAY_BASE_URL })
     : await AgentRelay.createWorkspace({
         name: `counterwhorl-${crypto.randomUUID().slice(0, 8)}`,
+        baseUrl: process.env.RELAY_BASE_URL,
       });
   if (!relay.workspaceKey)
     throw new Error("Relay did not return a workspace key");
