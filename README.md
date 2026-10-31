@@ -1,4 +1,4 @@
-# DEMO SCRIPT
+# DEMO SCRIPT (my audio was not working because my computer broke a couple days ago and the microphone stopped working)
 
 "AI agents can get stuck. Counterwhorl demonstrates how two independent agents can recover from a failure without losing state or conflicting with each other.
 
