@@ -1,8 +1,8 @@
 import type { MissionState, Vec3 } from "../shared/contract";
-import { angle, dot, escaped, isUnit, MAX_ALPHA, sphericalMove, STEP_ALPHA, steering, UNIT_TOLERANCE } from "../core/geometry";
+import { add, angle, dot, escaped, isUnit, MAX_ALPHA, scale, sphericalMove, STEP_ALPHA, steering, UNIT_TOLERANCE } from "../core/geometry";
 
 export type CandidateId = "A"|"B";
-export interface KeepOut { axis: Vec3; halfAngle: number }
+export interface KeepOut { axis: Vec3; halfAngle: number; missionRelative?: boolean }
 export interface Candidate {
   id: CandidateId;
   /** Per-step angular cap; each committed step is min(stepAlpha, distance to rescue axis). */
@@ -24,10 +24,11 @@ const MAX_STEPS=40;
 
 /** Deterministically simulate a rescue at a fixed step cap and validate it against Terse policy and the keep-out cone. */
 export function simulate(state: Pick<MissionState,"position"|"goal"|"rescueAxis">,id: CandidateId,keepOut: KeepOut): Candidate {
+  const keepOutAxis=keepOut.missionRelative?add(scale(state.goal,-Math.cos(0.7)),scale(state.rescueAxis,Math.sin(0.7))):keepOut.axis;
   const stepAlpha=CANDIDATE_ALPHAS[id];
   const violations: string[]=[];
   let x=state.position;
-  let minClearance=angle(x,keepOut.axis)-keepOut.halfAngle;
+  let minClearance=angle(x,keepOutAxis)-keepOut.halfAngle;
   let first: {tangent: Vec3; alpha: number}|undefined;
   let steps=0;
   while(!escaped(x,state.goal)&&steps<MAX_STEPS) {
@@ -39,7 +40,7 @@ export function simulate(state: Pick<MissionState,"position"|"goal"|"rescueAxis"
     if(!isUnit(steer.tangent)||Math.abs(dot(x,steer.tangent))>UNIT_TOLERANCE) violations.push(`step ${steps+1}: tangent not unit/tangent`);
     if(!(alpha>0&&alpha<=MAX_ALPHA)) violations.push(`step ${steps+1}: alpha ${alpha} outside (0, ${MAX_ALPHA}]`);
     if(alpha>angle(x,state.rescueAxis)+UNIT_TOLERANCE) violations.push(`step ${steps+1}: overshoots rescue axis`);
-    for(let k=1;k<=SAMPLES_PER_STEP;k++) minClearance=Math.min(minClearance,angle(sphericalMove(x,steer.tangent,alpha*k/SAMPLES_PER_STEP),keepOut.axis)-keepOut.halfAngle);
+    for(let k=1;k<=SAMPLES_PER_STEP;k++) minClearance=Math.min(minClearance,angle(sphericalMove(x,steer.tangent,alpha*k/SAMPLES_PER_STEP),keepOutAxis)-keepOut.halfAngle);
     first??={tangent:steer.tangent,alpha};
     x=sphericalMove(x,steer.tangent,alpha);
     steps++;

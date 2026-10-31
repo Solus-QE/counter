@@ -37,4 +37,6 @@ The Navigator resends `recovery_request` if Terse shows no grant after 15 s, the
 
 If `ANTHROPIC_API_KEY` is set (disable with `RESCUER_LLM=0`; model `RESCUER_LLM_MODEL`, default `claude-opus-5-5`, 8 s cap), the model picks a candidate ID through JSON-schema structured output. It never produces numbers. Its pick is validated with Zod and against the deterministic checks; any failure falls back to the deterministic choice, logged as `DETERMINISTIC FALLBACK`. The proposal ID on `handoff_granted` (`llm-A-…` / `det-A-…`) shows the source to the frontend.
 
-Tuning: `AGENT_POLL_MS` (500), `NAVIGATOR_STEP_MS` (750), `RESCUER_STEP_MS` (300), `AGENT_PEER_RESEND_MS` (15000), `AGENT_INBOX_POLL_MS` (10000; backs off when Relay returns 503).
+Tuning: `AGENT_POLL_MS` (500), `NAVIGATOR_STEP_MS` (750), `RESCUER_STEP_MS` (300), `AGENT_PEER_RESEND_MS` (15000), `AGENT_INBOX_POLL_MS` (10000).
+
+Relay retry handling uses the server's `Retry-After` deadline and jittered exponential backoff. SDK automatic retries are disabled where the application owns retries, so they do not multiply each other. Temporary setup failures keep the workers waiting rather than exiting. Failed inbox reads leave live listeners running. The coordinator polls every five seconds and backs off inbox and notification failures separately; health continues to report actual service errors. HTTP 503 `database_overloaded` is a Relay service failure and may still delay both requests and completion messages.

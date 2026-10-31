@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Counterwhorl — Autonomous Agent Recovery</title>
+    <title>Counterwhorl | Spherical navigation</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -14,7 +14,7 @@
         <div class="topbar-left">
           <div class="brand-cluster">
             <span class="wordmark">Counterwhorl</span>
-            <span class="product-subtitle">Autonomous Agent Recovery</span>
+            <span class="product-subtitle">Spherical navigation</span>
           </div>
 
           <span class="sep" aria-hidden="true">/</span>
@@ -60,7 +60,7 @@
               id="btn-start"
               class="ctrl-btn"
               type="button"
-              title="POST /api/missions — Initialize autonomous flight toward target +g"
+              title="POST /api/missions: Initialize autonomous flight toward target +g"
             >
               Start Mission
             </button>
@@ -227,6 +227,7 @@
             id="sphere-stage"
             aria-label="Unit sphere attitude visualization"
           >
+            <canvas id="cesure-background" class="cesure-background" aria-hidden="true"></canvas>
             <!-- SPARSE TOP-LEFT EXPERIMENT READOUT -->
             <div class="globe-overlay overlay-top-left">
               <div id="hud-authority-box" class="globe-authority auth-standby">
@@ -238,7 +239,7 @@
               </div>
             </div>
 
-            <!-- SPARSE TOP-RIGHT VIEW CONTROLS (NASA EYES STYLE — NEVER COLLIDES WITH BOTTOM LEGEND) -->
+            <!-- SPARSE TOP-RIGHT VIEW CONTROLS (NASA EYES STYLE: NEVER COLLIDES WITH BOTTOM LEGEND) -->
             <div class="globe-overlay overlay-top-right">
               <div
                 class="view-controls"
@@ -323,7 +324,7 @@
             <header class="protocol-header">
               <div class="protocol-title-group">
                 <span class="protocol-dot" id="protocol-live-dot"></span>
-                <h2 class="protocol-title">Live Protocol Timeline</h2>
+                <h2 class="protocol-title">Mission record</h2>
               </div>
 
               <div class="protocol-kpis" aria-label="Live protocol summary">
@@ -345,7 +346,7 @@
                 </div>
                 <div class="pk-item">
                   <span class="pk-label">Latency</span>
-                  <span id="tl-latency" class="pk-val mono">—</span>
+                  <span id="tl-latency" class="pk-val mono">n/a</span>
                 </div>
               </div>
             </header>
@@ -365,7 +366,7 @@
               aria-live="polite"
             >
               <div class="console-empty">
-                No protocol events yet — click <strong>Break Navigator</strong> to observe real Agent Relay handoff and Terse epoch fencing.
+                Start a mission, then use <strong>Break Navigator</strong> to observe recovery.
               </div>
             </div>
           </section>
@@ -391,49 +392,49 @@
                 <span class="r-marker" aria-hidden="true">1</span>
                 <div class="r-copy">
                   <span class="r-title">Navigator active</span>
-                  <span class="r-detail">Autonomous geodesic steering toward target +g</span>
+                  <span class="r-detail">Steering toward +g</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="blind_spot_detected">
                 <span class="r-marker" aria-hidden="true">2</span>
                 <div class="r-copy">
                   <span class="r-title">Mathematical blind spot detected</span>
-                  <span class="r-detail">Navigator gradient vanishes at exact antipode (−g)</span>
+                  <span class="r-detail">Steering is zero at −g</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="recovery_requested">
                 <span class="r-marker" aria-hidden="true">3</span>
                 <div class="r-copy">
                   <span class="r-title">Recovery requested via Agent Relay</span>
-                  <span class="r-detail">@navigator dispatches authenticated request to @rescuer</span>
+                  <span class="r-detail">Navigator asks Rescuer for control</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="rescuer_accepts">
                 <span class="r-marker" aria-hidden="true">4</span>
                 <div class="r-copy">
                   <span class="r-title">Rescuer accepts responsibility</span>
-                  <span class="r-detail">@rescuer selects orthogonal escape trajectory</span>
+                  <span class="r-detail">Rescuer selects a tangent escape</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="terse_authorizes">
                 <span class="r-marker" aria-hidden="true">5</span>
                 <div class="r-copy">
                   <span class="r-title">Terse authorizes movement</span>
-                  <span class="r-detail">Durable actor fences control epoch &amp; validates escape</span>
+                  <span class="r-detail">Terse validates and saves each move</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="navigator_resumes">
                 <span class="r-marker" aria-hidden="true">6</span>
                 <div class="r-copy">
                   <span class="r-title">Navigator resumes</span>
-                  <span class="r-detail">Terse commits control_returned past 30° escape cone</span>
+                  <span class="r-detail">Terse returns control after escape</span>
                 </div>
               </li>
               <li class="r-step is-pending" data-step-id="mission_completed">
                 <span class="r-marker" aria-hidden="true">7</span>
                 <div class="r-copy">
                   <span class="r-title">Mission completed</span>
-                  <span class="r-detail">Spacecraft attitude locked within 10⁻⁴ rad of target</span>
+                  <span class="r-detail">Pointing is within 0.0001 rad of +g</span>
                 </div>
               </li>
             </ol>
@@ -446,7 +447,7 @@
           <!-- PANEL 2: AUTONOMOUS AGENTS SUMMARY -->
           <section id="card-pilots" class="side-section">
             <div class="section-head">
-              <h2 class="section-title">Autonomous Agents</h2>
+              <h2 class="section-title">Pilots</h2>
               <span id="meta-authority" class="state-tag tag-neutral">
                 Standby
               </span>
@@ -534,13 +535,13 @@
                     type="button"
                     title="Copy full run ID"
                   >
-                    <span id="meta-run-id">—</span>
+                    <span id="meta-run-id">n/a</span>
                   </button>
                 </div>
                 <div class="data-row">
                   <span class="row-label">Handoff / Proposal</span>
                   <span class="row-val mono">
-                    <span id="res-req-id">—</span> / <span id="res-prop-id">—</span>
+                    <span id="res-req-id">n/a</span> / <span id="res-prop-id">n/a</span>
                   </span>
                 </div>
                 <div class="data-row">

@@ -423,9 +423,9 @@ export class SphereVisualizer {
       cy,
       radius,
     );
-    sphereGrad.addColorStop(0, "#171b24");
-    sphereGrad.addColorStop(0.56, "#0d1016");
-    sphereGrad.addColorStop(1, "#07090d");
+    sphereGrad.addColorStop(0, "#1c1d19");
+    sphereGrad.addColorStop(0.56, "#11120f");
+    sphereGrad.addColorStop(1, "#090a08");
     ctx.fillStyle = sphereGrad;
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -1120,7 +1120,7 @@ export class SphereVisualizer {
       );
     }
 
-    // 2. Navigator tangent vector (Cyan — or subtle zero-gradient note when stalled)
+    // 2. Navigator tangent vector (Cyan: or subtle zero-gradient note when stalled)
     if (pNav) {
       const isNavActive = this.state.activePilot === "navigator";
       this.drawArrow2D(

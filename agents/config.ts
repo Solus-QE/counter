@@ -44,7 +44,7 @@ export interface AgentConfig {
   peerResendMs: number;
   maxRunIdleMs: number;
   /** Forbidden camera pointing cone enforced by the Rescuer's deterministic validator. */
-  keepOut: { axis: Vec3; halfAngle: number };
+  keepOut: { axis: Vec3; halfAngle: number; missionRelative?: boolean };
   llm: { enabled: boolean; apiKey?: string; model: string; timeoutMs: number; disabledReason?: string };
 }
 
@@ -69,12 +69,12 @@ export function loadConfig(role: Role): AgentConfig {
     },
     apiUrl: env("COUNTERWHORL_API_URL")??`http://127.0.0.1:${env("PORT")??3001}`,
     pollMs: num("AGENT_POLL_MS",500),
-    inboxPollMs: num("AGENT_INBOX_POLL_MS",10000),
+    inboxPollMs: num("AGENT_INBOX_POLL_MS",30000),
     navigatorStepMs: num("NAVIGATOR_STEP_MS",750),
     rescuerStepMs: num("RESCUER_STEP_MS",300),
     peerResendMs: num("AGENT_PEER_RESEND_MS",15000),
     maxRunIdleMs: num("AGENT_MAX_RUN_IDLE_MS",30*60*1000),
-    keepOut: { axis: vector("RESCUER_KEEP_OUT_AXIS",DEFAULT_KEEP_OUT), halfAngle: num("RESCUER_KEEP_OUT_HALF_ANGLE",0.05) },
+    keepOut: { axis: vector("RESCUER_KEEP_OUT_AXIS",DEFAULT_KEEP_OUT), halfAngle: num("RESCUER_KEEP_OUT_HALF_ANGLE",0.05), missionRelative:!env("RESCUER_KEEP_OUT_AXIS") },
     llm: { enabled: !disabledReason, apiKey, model: env("RESCUER_LLM_MODEL")??"claude-opus-5-5", timeoutMs: num("RESCUER_LLM_TIMEOUT_MS",8000), disabledReason },
   };
 }

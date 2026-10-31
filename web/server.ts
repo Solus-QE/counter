@@ -145,6 +145,18 @@ export function startWebServer(port = PORT, hostname = HOST) {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
 
+      if (url.pathname.startsWith("/api/pilot/")) {
+        return Response.json(
+          {
+            error: {
+              code: "UNAUTHORIZED",
+              message: "Pilot routes are not available to browsers",
+            },
+          },
+          { status: 403, headers: { "cache-control": "no-store" } },
+        );
+      }
+
       if (url.pathname.startsWith("/api/")) {
         return proxyApi(request, url);
       }

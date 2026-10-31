@@ -30,6 +30,18 @@ export type UiLifecycleState =
   | "failed"
   | "completed";
 
+export type RelayHealthStatus =
+  | "connecting"
+  | "online"
+  | "offline"
+  | "errored";
+
+export interface RelayHealthInfo {
+  status: RelayHealthStatus;
+  label: string;
+  detail: string;
+}
+
 export type HandoffPipelineStage =
   | "idle"
   | "stalled"
@@ -72,6 +84,8 @@ export interface ProtocolTimelineEntry {
   authorityTone: "navigator" | "rescuer" | "coordinator" | "alert" | "ok";
   summary: string;
   relayMessageId: string | null;
+  /** True when a second Terse transition (e.g. handoff_granted) cites an earlier peer Relay request ID. */
+  relayCited?: boolean;
   transportLabel: string;
   sortOrder: number;
   stepCount?: number;
@@ -117,6 +131,7 @@ export interface TelemetrySnapshot {
   lifecycle: UiLifecycleState;
   lifecycleLabel: string;
   lifecycleDetail: string;
+  relayHealth: RelayHealthInfo;
 
   position: Vec3;
   goal: Vec3;
@@ -167,9 +182,82 @@ export interface TelemetryInput {
   recoveryWatchFailedReason?: string | null;
 }
 
-function compactId(id: string, max = 14): string {
+function compactId(id: string, max = 20): string {
   if (id.length <= max) return id;
-  return `${id.slice(0, 7)}…${id.slice(-4)}`;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
+/**
+ * Distinguishes the four genuine Agent Relay health states without ever manufacturing an online state:
+ * - `connecting`: initial health check in flight OR fresh backend startup (`terse:true, relay:false` without `relayError`)
+ * - `online`: `terse:true, relay:true`
+ * - `offline`: backend unreachable OR Relay explicitly unconfigured/offline/disconnected
+ * - `errored`: explicit Relay initialization, capacity, identity, or transport failure (`relayError`)
+ */
+export function deriveRelayHealth(
+  booting: boolean,
+  health: HealthResponse | null,
+): RelayHealthInfo {
+  if (booting && !health) {
+    return {
+      status: "connecting",
+      label: "connecting",
+      detail: "Checking Agent Relay status…",
+    };
+  }
+  if (!health || !health.terse) {
+    return {
+      status: "offline",
+      label: "offline",
+      detail: health?.relayError ?? "Backend unreachable",
+    };
+  }
+  if (health.relay) {
+    return {
+      status: "online",
+      label: "online",
+      detail: "Agent Relay connected",
+    };
+  }
+  if (!health.relayError) {
+    return {
+      status: "connecting",
+      label: "connecting",
+      detail: "Agent Relay bridge connecting…",
+    };
+  }
+  if (
+    /not configured|^offline$|^disconnected$|api unreachable/i.test(
+      health.relayError.trim(),
+    )
+  ) {
+    return {
+      status: "offline",
+      label: "offline",
+      detail: health.relayError,
+    };
+  }
+  return {
+    status: "errored",
+    label: "error",
+    detail: health.relayError,
+  };
+}
+
+/**
+ * Enforces monotonic state adoption per runId: ignores stale revisions (`incoming.revision < current.revision`).
+ */
+export function mergeAuthoritativeState(
+  current: MissionState | null,
+  incoming: MissionState,
+): MissionState {
+  if (!current || current.runId !== incoming.runId) {
+    return incoming;
+  }
+  if (incoming.revision < current.revision) {
+    return current;
+  }
+  return incoming;
 }
 
 export function decodeProposalDecision(
@@ -226,8 +314,18 @@ export function buildAuthenticRelayTranscript(
     (e) => e.type === "control_returned",
   );
 
+  const itemsById = new Map<string, RelayTranscriptItem>();
+
   for (const ev of events) {
     if (!ev.relayMessageId) continue;
+
+    // `recovery_requested` and `handoff_granted` can cite the SAME peer request ID;
+    // they are two Terse transitions, not two Relay messages.
+    const existing = itemsById.get(ev.relayMessageId);
+    if (existing && ev.type === "handoff_granted") {
+      existing.detail = `${existing.detail} → Terse r${ev.revision} granted (${ev.detail ?? "validated"})`;
+      continue;
+    }
 
     let sender = `@${ev.pilot}`;
     let recipient = "@coordinator";
@@ -241,7 +339,7 @@ export function buildAuthenticRelayTranscript(
         sender = "@navigator";
         recipient = "@rescuer";
         pilotClass = "navigator";
-        action = "request_handoff";
+        action = "recovery_request";
         detail = ev.detail ? `handoff=${ev.detail}` : "navigator_stalled";
         break;
       case "handoff_granted":
@@ -274,7 +372,7 @@ export function buildAuthenticRelayTranscript(
         break;
     }
 
-    items.push({
+    const item: RelayTranscriptItem = {
       messageId: ev.relayMessageId,
       timestamp: ev.timestamp,
       sender,
@@ -285,7 +383,9 @@ export function buildAuthenticRelayTranscript(
       revision: ev.revision,
       controlEpoch: ev.controlEpoch,
       terseVerified: true,
-    });
+    };
+    itemsById.set(ev.relayMessageId, item);
+    items.push(item);
   }
 
   for (const entry of peerLedger) {
@@ -362,7 +462,7 @@ export function buildAuthenticRelayTranscript(
 }
 
 /**
- * Builds the unified Live Protocol Timeline combining persisted Terse revisions and
+ * Builds the unified Mission record combining persisted Terse revisions and
  * authenticated Agent Relay peer messages without ever fabricating Relay message IDs.
  */
 export function buildProtocolTimeline(
@@ -373,6 +473,8 @@ export function buildProtocolTimeline(
   const hasTerseControlReturned = events.some(
     (e) => e.type === "control_returned",
   );
+
+  const seenEventRelayIds = new Set<string>();
 
   for (const ev of events) {
     let authorityLabel = "Coordinator";
@@ -423,6 +525,9 @@ export function buildProtocolTimeline(
     }
 
     const relayId = ev.relayMessageId ?? null;
+    const relayCited = Boolean(relayId && seenEventRelayIds.has(relayId));
+    if (relayId) seenEventRelayIds.add(relayId);
+
     const transportLabel = relayId
       ? relayId
       : ev.type === "mission_started" || ev.type === "challenge_forced"
@@ -462,6 +567,7 @@ export function buildProtocolTimeline(
       authorityTone,
       summary,
       relayMessageId: relayId,
+      relayCited,
       transportLabel,
       sortOrder: ev.revision * 10,
       stepCount: ev.type === "movement_committed" && !relayId ? 1 : undefined,
@@ -479,10 +585,9 @@ export function buildProtocolTimeline(
     ) {
       continue;
     }
-    // Prefer outbound record when both agents log the same DM locally
     seenLedgerIds.add(entry.messageId);
 
-    // If recovery_request is already cited on Terse recovery_requested, also surface the peer DM only if recovery_requested hasn't committed yet
+    // If recovery_request is already cited on Terse recovery_requested, surface the peer DM only before Terse commits it
     const citedOnRequest = events.some(
       (e) =>
         e.type === "recovery_requested" &&
@@ -499,10 +604,19 @@ export function buildProtocolTimeline(
       authorityTone = "navigator";
       summary = `Relay DM recovery_request${entry.handoffId ? ` (${compactId(entry.handoffId, 12)})` : ""}`;
     } else if (entry.type === "recovery_complete") {
+      const navReceived = peerLedger.some(
+        (p) =>
+          p.messageId === entry.messageId &&
+          p.type === "recovery_complete" &&
+          p.role === "navigator" &&
+          p.dir === "in",
+      );
       authorityLabel = "Rescuer → Nav";
       authorityTone = hasTerseControlReturned ? "ok" : "rescuer";
       summary = hasTerseControlReturned
-        ? "Relay DM recovery_complete delivered to @navigator"
+        ? navReceived
+          ? "Relay DM recovery_complete (@navigator receipt verified)"
+          : "Relay DM recovery_complete sent by @rescuer"
         : "Relay DM recovery_complete (awaiting Terse control_returned)";
     } else if (entry.type === "recovery_rejected") {
       authorityLabel = "Rescuer → Nav";
@@ -564,43 +678,43 @@ export function buildRecoveryChecklist(params: {
       {
         id: "navigator_active",
         title: "Navigator active",
-        detail: "Autonomous geodesic steering toward target +g",
+        detail: "Steering toward +g",
         status: "pending",
       },
       {
         id: "blind_spot_detected",
         title: "Mathematical blind spot detected",
-        detail: "Navigator gradient vanishes at exact antipode (−g)",
+        detail: "Steering is zero at −g",
         status: "pending",
       },
       {
         id: "recovery_requested",
         title: "Recovery requested via Agent Relay",
-        detail: "@navigator dispatches authenticated request to @rescuer",
+        detail: "Navigator asks Rescuer for control",
         status: "pending",
       },
       {
         id: "rescuer_accepts",
         title: "Rescuer accepts responsibility",
-        detail: "@rescuer selects orthogonal escape trajectory",
+        detail: "Rescuer selects a tangent escape",
         status: "pending",
       },
       {
         id: "terse_authorizes",
         title: "Terse authorizes movement",
-        detail: "Durable actor fences control epoch & validates escape",
+        detail: "Terse validates and saves each move",
         status: "pending",
       },
       {
         id: "navigator_resumes",
         title: "Navigator resumes",
-        detail: "Terse commits control_returned past 30° escape cone",
+        detail: "Terse returns control after escape",
         status: "pending",
       },
       {
         id: "mission_completed",
         title: "Mission completed",
-        detail: "Spacecraft attitude locked within 10⁻⁴ rad of target",
+        detail: "Pointing is within 0.0001 rad of +g",
         status: "pending",
       },
     ];
@@ -618,7 +732,9 @@ export function buildRecoveryChecklist(params: {
   const peerReq = [...peerLedger]
     .reverse()
     .find((p) => p.type === "recovery_request");
-  const relayOffline = Boolean(health && !health.relay);
+  const relayInfo = deriveRelayHealth(false, health);
+  const relayBlocked =
+    relayInfo.status === "offline" || relayInfo.status === "errored";
 
   const recoveryTriggered =
     isStalled ||
@@ -651,8 +767,8 @@ export function buildRecoveryChecklist(params: {
           id: "recovery_requested",
           title: "Recovery requested via Agent Relay",
           detail: relayIdCited
-            ? `Relay ID ${compactId(relayIdCited, 14)} · Terse r${reqEvent?.revision ?? "—"}`
-            : `Recorded at Terse r${reqEvent?.revision ?? "—"}`,
+            ? `Relay ID ${compactId(relayIdCited, 20)} · Terse r${reqEvent?.revision ?? "n/a"}`
+            : `Recorded at Terse r${reqEvent?.revision ?? "n/a"}`,
           badge: "Relay",
           status: "completed",
         },
@@ -667,13 +783,13 @@ export function buildRecoveryChecklist(params: {
           id: "terse_authorizes",
           title: "Terse authorizes movement",
           detail: `Epoch e${grantEvent?.controlEpoch ?? 2} · ${outcomes.rescuerMoves} escape steps committed`,
-          badge: `r${grantEvent?.revision ?? "—"}`,
+          badge: `r${grantEvent?.revision ?? "n/a"}`,
           status: "completed",
         },
         {
           id: "navigator_resumes",
           title: "Navigator resumes",
-          detail: `Terse confirmed control_returned at r${returnEvent?.revision ?? "—"}`,
+          detail: `Terse confirmed control_returned at r${returnEvent?.revision ?? "n/a"}`,
           badge: `e${mission.controlEpoch}`,
           status: "completed",
         },
@@ -703,7 +819,7 @@ export function buildRecoveryChecklist(params: {
       {
         id: "blind_spot_detected",
         title: "Mathematical blind spot detected",
-        detail: "Not triggered — click Break Navigator to test recovery",
+        detail: "Not triggered: click Break Navigator to test recovery",
         status: "skipped",
       },
       {
@@ -762,8 +878,8 @@ export function buildRecoveryChecklist(params: {
         id: "recovery_requested",
         title: "Recovery requested via Agent Relay",
         detail: relayIdCited
-          ? `Relay ID ${compactId(relayIdCited, 14)} · Terse r${reqEvent?.revision ?? "—"}`
-          : `Terse r${reqEvent?.revision ?? "—"}`,
+          ? `Relay ID ${compactId(relayIdCited, 20)} · Terse r${reqEvent?.revision ?? "n/a"}`
+          : `Terse r${reqEvent?.revision ?? "n/a"}`,
         badge: "Relay",
         status: "completed",
       },
@@ -778,7 +894,7 @@ export function buildRecoveryChecklist(params: {
         id: "terse_authorizes",
         title: "Terse authorizes movement",
         detail: `${outcomes.rescuerMoves} orthogonal escape steps committed`,
-        badge: `r${grantEvent?.revision ?? "—"}`,
+        badge: `r${grantEvent?.revision ?? "n/a"}`,
         status: "completed",
       },
       {
@@ -817,7 +933,7 @@ export function buildRecoveryChecklist(params: {
         id: "recovery_requested",
         title: "Recovery requested via Agent Relay",
         detail: relayIdCited
-          ? `Relay ID ${compactId(relayIdCited, 14)} · Terse r${reqEvent?.revision ?? "—"}`
+          ? `Relay ID ${compactId(relayIdCited, 20)} · Terse r${reqEvent?.revision ?? "n/a"}`
           : `Handoff ${mission.pendingRecovery?.requestId ?? ""} recorded`,
         badge: "Relay",
         status: "completed",
@@ -873,7 +989,7 @@ export function buildRecoveryChecklist(params: {
         id: "recovery_requested",
         title: "Recovery requested via Agent Relay",
         detail: relayIdCited
-          ? `Relay ID ${compactId(relayIdCited, 14)} · Terse r${reqEvent?.revision ?? mission.revision}`
+          ? `Relay ID ${compactId(relayIdCited, 20)} · Terse r${reqEvent?.revision ?? mission.revision}`
           : `Terse r${mission.revision} (${mission.pendingRecovery?.requestId ?? "pending"})`,
         badge: "Sent",
         status: "completed",
@@ -881,11 +997,23 @@ export function buildRecoveryChecklist(params: {
       {
         id: "rescuer_accepts",
         title: "Rescuer accepts responsibility",
-        detail: relayOffline
-          ? "Blocked — Agent Relay disconnected"
-          : "@rescuer evaluating orthogonal candidates A & B…",
-        badge: relayOffline ? "Offline" : "Planning",
-        status: relayOffline ? "alert" : "active",
+        detail:
+          relayInfo.status === "errored"
+            ? `Blocked: Agent Relay error (${relayInfo.detail})`
+            : relayBlocked
+              ? "Blocked: Agent Relay offline"
+              : relayInfo.status === "connecting"
+                ? "Agent Relay connecting · awaiting @rescuer…"
+                : "@rescuer evaluating orthogonal candidates A & B…",
+        badge:
+          relayInfo.status === "errored"
+            ? "Error"
+            : relayBlocked
+              ? "Offline"
+              : relayInfo.status === "connecting"
+                ? "Sync"
+                : "Planning",
+        status: relayBlocked ? "alert" : "active",
       },
       {
         id: "terse_authorizes",
@@ -928,11 +1056,21 @@ export function buildRecoveryChecklist(params: {
         id: "recovery_requested",
         title: "Recovery requested via Agent Relay",
         detail: peerReq
-          ? `Relay DM ${compactId(peerReq.messageId, 14)} sent → registering in Terse`
-          : relayOffline
-            ? "Cannot request handoff — Agent Relay is disconnected"
-            : "Awaiting @navigator autonomous recovery_request over Relay…",
-        badge: peerReq ? "Relay" : relayOffline ? "Offline" : "Next",
+          ? `Relay DM ${compactId(peerReq.messageId, 20)} sent → registering in Terse`
+          : relayInfo.status === "errored"
+            ? `Cannot request handoff: Relay error (${relayInfo.detail})`
+            : relayBlocked
+              ? "Cannot request handoff: Agent Relay is offline"
+              : relayInfo.status === "connecting"
+                ? "Agent Relay connecting · awaiting @navigator request…"
+                : "Awaiting @navigator autonomous recovery_request over Relay…",
+        badge: peerReq
+          ? "Relay"
+          : relayInfo.status === "errored"
+            ? "Error"
+            : relayBlocked
+              ? "Offline"
+              : "Next",
         status: peerReq ? "active" : "pending",
       },
       {
@@ -971,9 +1109,13 @@ export function buildRecoveryChecklist(params: {
       detail:
         outcomes.navigatorMoves > 0
           ? `Steering toward +g (${deg}° remaining · Terse r${mission.revision})`
-          : relayOffline
-            ? `Initialized at r${mission.revision} · Relay offline (click Break Navigator to test stall)`
-            : `Initialized at r${mission.revision} · awaiting @navigator step (${deg}° to +g)`,
+          : relayInfo.status === "errored"
+            ? `Initialized at r${mission.revision} · Relay error (${relayInfo.detail})`
+            : relayBlocked
+              ? `Initialized at r${mission.revision} · Relay offline (click Break Navigator to test stall)`
+              : relayInfo.status === "connecting"
+                ? `Initialized at r${mission.revision} · Relay connecting…`
+                : `Initialized at r${mission.revision} · awaiting @navigator step (${deg}° to +g)`,
       badge: `e${mission.controlEpoch}`,
       status: "active",
     },
@@ -1164,6 +1306,8 @@ export function deriveTelemetry(input: TelemetryInput): TelemetrySnapshot {
     outcomes,
   });
 
+  const relayHealth = deriveRelayHealth(booting, health);
+
   // Authoritative lifecycle state
   let lifecycle: UiLifecycleState;
   let lifecycleLabel: string;
@@ -1188,10 +1332,22 @@ export function deriveTelemetry(input: TelemetryInput): TelemetrySnapshot {
     lifecycleDetail = `${lastError.code}: ${lastError.message}`;
   } else if (!mission) {
     lifecycle = "waiting";
-    lifecycleLabel = health.relay ? "Ready" : "Relay offline";
-    lifecycleDetail = health.relay
-      ? "Click Break Navigator to demonstrate autonomous blind-spot recovery"
-      : `Terse online · Agent Relay disconnected (${health.relayError ?? "not configured"})`;
+    lifecycleLabel =
+      relayHealth.status === "online"
+        ? "Ready"
+        : relayHealth.status === "connecting"
+          ? "Relay connecting"
+          : relayHealth.status === "errored"
+            ? "Relay error"
+            : "Relay offline";
+    lifecycleDetail =
+      relayHealth.status === "online"
+        ? "Click Break Navigator to demonstrate autonomous blind-spot recovery"
+        : relayHealth.status === "connecting"
+          ? "Terse online · Agent Relay bridge connecting…"
+          : relayHealth.status === "errored"
+            ? `Terse online · Agent Relay error (${relayHealth.detail})`
+            : `Terse online · Agent Relay offline (${relayHealth.detail})`;
   } else if (mission.phase === "completed") {
     lifecycle = "completed";
     lifecycleLabel = "Mission completed";
@@ -1212,20 +1368,28 @@ export function deriveTelemetry(input: TelemetryInput): TelemetrySnapshot {
   } else if (mission.phase === "awaiting_rescue" || isStalled) {
     lifecycle = "stalled";
     lifecycleLabel = "Blind spot stall";
-    lifecycleDetail = !health.relay
-      ? `Stalled at −g · Agent Relay disconnected (${health.relayError ?? "offline"})`
-      : mission.phase === "awaiting_rescue"
-        ? `Recovery requested via Agent Relay · awaiting Rescuer proposal`
-        : "Navigator gradient vanished at −g · initiating Relay handoff";
+    lifecycleDetail =
+      relayHealth.status === "errored"
+        ? `Stalled at −g · Agent Relay error (${relayHealth.detail})`
+        : relayHealth.status === "offline"
+          ? `Stalled at −g · Agent Relay offline (${relayHealth.detail})`
+          : relayHealth.status === "connecting"
+            ? "Stalled at −g · Agent Relay bridge connecting…"
+            : mission.phase === "awaiting_rescue"
+              ? "Recovery requested via Agent Relay · awaiting Rescuer proposal"
+              : "Navigator gradient vanished at −g · initiating Relay handoff";
   } else if (
     mission.revision <= 1 &&
     !events.some((e) => e.type === "movement_committed")
   ) {
     lifecycle = "waiting";
     lifecycleLabel = "Mission initialized";
-    lifecycleDetail = health.relay
-      ? `Terse r${mission.revision} · awaiting @navigator autonomous flight`
-      : `Terse r${mission.revision} · Agent Relay disconnected`;
+    lifecycleDetail =
+      relayHealth.status === "online"
+        ? `Terse r${mission.revision} · awaiting @navigator autonomous flight`
+        : relayHealth.status === "connecting"
+          ? `Terse r${mission.revision} · Agent Relay bridge connecting…`
+          : `Terse r${mission.revision} · Agent Relay ${relayHealth.label} (${relayHealth.detail})`;
   } else {
     lifecycle = "navigating";
     lifecycleLabel =
@@ -1268,7 +1432,7 @@ export function deriveTelemetry(input: TelemetryInput): TelemetrySnapshot {
   let handoffStage: HandoffPipelineStage = "idle";
   let handoffGateLabel = "Idle";
   let handoffGateNote =
-    "Confirmed strictly after Terse commits control_returned.";
+    "Terse confirms control before navigation resumes.";
 
   if (mission) {
     if (mission.phase === "rescuing") {
@@ -1299,6 +1463,7 @@ export function deriveTelemetry(input: TelemetryInput): TelemetrySnapshot {
     lifecycle,
     lifecycleLabel,
     lifecycleDetail,
+    relayHealth,
     position,
     goal,
     antipode,

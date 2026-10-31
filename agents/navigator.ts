@@ -4,8 +4,9 @@ import { loadConfig, type AgentConfig } from "./config";
 import { connect, logger, type RelayLink } from "./link";
 import { HttpPilotApi, type CommandReply, type PilotApi } from "./pilot-api";
 import type { PeerMessage } from "./protocol";
+import { relayRetryDelay } from "../shared/relay-retry";
 
-interface Handoff { handoffId: string; requestMessageId: string; epochAtRequest: number; attempts: number; lastSent: number }
+interface Handoff { handoffId: string; requestMessageId: string; epochAtRequest: number; attempts: number; lastSent: number; sending?: boolean }
 interface Run { state: MissionState; busy: boolean; dirty: boolean; handoff?: Handoff; done?: boolean; failures: number }
 
 const meta=(s: MissionState): CommandMeta=>({runId:s.runId,commandId:`nav-${crypto.randomUUID()}`,expectedRevision:s.revision,controlEpoch:s.controlEpoch});
@@ -78,7 +79,7 @@ export class NavigatorAgent {
         const prior=[...s.events].reverse().find(e=>e.type==="recovery_requested"&&e.detail===s.pendingRecovery!.requestId);
         run.handoff={handoffId:s.pendingRecovery.requestId,requestMessageId:prior?.relayMessageId??"unknown",epochAtRequest:s.controlEpoch,attempts:1,lastSent:0};
       }
-      if(run.handoff) await this.resendIfStuck(run);
+      if(run.handoff) this.resendIfStuck(run);
       return;
     }
     if(s.phase!=="navigating"||s.activePilot!=="navigator") return;
@@ -103,7 +104,7 @@ export class NavigatorAgent {
       requestMessageId=await this.link.sendPeer({type:"recovery_request",v:1,runId:s.runId,handoffId,revision:s.revision,controlEpoch:s.controlEpoch,position:[...s.position]},`recovery-request-${handoffId}-${BOOT_ID}-1`);
     } catch(error) {
       this.log(`${tag(s)} Relay send failed (${error instanceof Error?error.message:error}); retrying`);
-      await sleep(1000);
+      await sleep(relayRetryDelay(error, run.failures++));
       run.dirty=true;
       return;
     }
@@ -113,18 +114,22 @@ export class NavigatorAgent {
     this.log(`${tag(s)} Terse recorded recovery_requested r${reply.result.state.revision} citing relay ${requestMessageId}`);
     run.handoff={handoffId,requestMessageId,epochAtRequest:reply.result.state.controlEpoch,attempts:1,lastSent:Date.now()};
   }
-  /** If Terse still shows no grant, the Relay request may be lost: resend with growing spacing. */
-  private async resendIfStuck(run: Run): Promise<void> {
+  /**
+   * If Terse still shows no grant, the Relay request may be lost: resend with growing spacing.
+   * Fire-and-forget: a slow Relay send must never delay noticing that Terse returned control.
+   */
+  private resendIfStuck(run: Run): void {
     const handoff=run.handoff!;
     const spacing=Math.min(60000,this.config.peerResendMs*2**(handoff.attempts-1));
-    if(Date.now()-handoff.lastSent<spacing) return;
+    if(handoff.sending||Date.now()-handoff.lastSent<spacing) return;
     handoff.lastSent=Date.now();
     handoff.attempts++;
+    handoff.sending=true;
     const s=run.state;
-    try {
-      const id=await this.link.sendPeer({type:"recovery_request",v:1,runId:s.runId,handoffId:handoff.handoffId,revision:s.revision,controlEpoch:s.controlEpoch,position:[...s.position]},`recovery-request-${handoff.handoffId}-${BOOT_ID}-${handoff.attempts}`);
-      this.log(`${tag(s)} no grant yet; recovery_request resent attempt ${handoff.attempts} (relay ${id})`);
-    } catch {this.log(`${tag(s)} recovery_request resend failed; will retry`);}
+    this.link.sendPeer({type:"recovery_request",v:1,runId:s.runId,handoffId:handoff.handoffId,revision:s.revision,controlEpoch:s.controlEpoch,position:[...s.position]},`recovery-request-${handoff.handoffId}-${BOOT_ID}-${handoff.attempts}`)
+      .then(id=>this.log(`${tag(s)} no grant yet; recovery_request resent attempt ${handoff.attempts} (relay ${id})`))
+      .catch(()=>this.log(`${tag(s)} recovery_request resend failed; will retry`))
+      .finally(()=>{handoff.sending=false;});
   }
   private onPeer(message: PeerMessage,messageId: string): void {
     if(message.type==="peer_ping"||message.type==="peer_pong"||message.type==="recovery_request") return;

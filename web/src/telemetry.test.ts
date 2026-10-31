@@ -4,7 +4,9 @@ import { ESCAPE_NORM, perpendicular, scale, sphericalMove } from "./sphere-math"
 import {
   buildAuthenticRelayTranscript,
   buildProtocolTimeline,
+  deriveRelayHealth,
   deriveTelemetry,
+  mergeAuthoritativeState,
 } from "./telemetry";
 
 function makeBaseState(overrides: Partial<MissionState> = {}): MissionState {
@@ -407,12 +409,106 @@ describe("COUNTERWHORL web telemetry & Terse confirmation invariants", () => {
     expect(snapDuring.recoverySteps[4].status).toBe("active");
     expect(snapDuring.recoverySteps[5].status).toBe("pending");
 
-    // Both recovery_requested and handoff_granted citing sharedRelayReqId are preserved
-    expect(snapDuring.relayTranscript).toHaveLength(2);
+    // Shared peer request ID produces 1 unique Relay message and 2 Terse revision rows (r4 citing r3)
+    expect(snapDuring.outcomes.verifiedRelayCount).toBe(1);
+    expect(snapDuring.relayTranscript).toHaveLength(1);
+    const sharedRows = snapDuring.protocolTimeline.filter(
+      (t) => t.relayMessageId === sharedRelayReqId,
+    );
+    expect(sharedRows).toHaveLength(2);
+    expect(sharedRows.find((r) => r.revision === 3)?.relayCited).toBe(false);
+    expect(sharedRows.find((r) => r.revision === 4)?.relayCited).toBe(true);
+  });
+
+  test("distinguishes connecting, online, offline, and errored Relay health states without manufacturing online", () => {
+    // 1. Booting before first health response -> connecting
+    expect(deriveRelayHealth(true, null).status).toBe("connecting");
+
+    // 2. Fresh backend startup: terse:true, relay:false, no relayError -> connecting
+    const startupConnecting = deriveRelayHealth(false, {
+      terse: true,
+      relay: false,
+    });
+    expect(startupConnecting.status).toBe("connecting");
+
+    // 3. Connected -> online
     expect(
-      snapDuring.protocolTimeline.filter(
-        (t) => t.relayMessageId === sharedRelayReqId,
-      ),
-    ).toHaveLength(2);
+      deriveRelayHealth(false, { terse: true, relay: true }).status,
+    ).toBe("online");
+
+    // 4. Unconfigured / disconnected / backend down -> offline
+    expect(
+      deriveRelayHealth(false, {
+        terse: true,
+        relay: false,
+        relayError: "RELAY_WORKSPACE_KEY is not configured",
+      }).status,
+    ).toBe("offline");
+    expect(
+      deriveRelayHealth(false, {
+        terse: false,
+        relay: false,
+        relayError: "API unreachable",
+      }).status,
+    ).toBe("offline");
+
+    // 5. Explicit capacity / initialization / transport failure -> errored
+    const capacityErr = deriveRelayHealth(false, {
+      terse: true,
+      relay: false,
+      relayError: "Relay initialization: workspace capacity limit reached",
+    });
+    expect(capacityErr.status).toBe("errored");
+    expect(capacityErr.label).toBe("error");
+  });
+
+  test("ignores stale state revisions while accepting newer revisions and new runs, and verifies peer recovery_complete receipt", () => {
+    const r5 = makeBaseState({ runId: "run-a", revision: 5 });
+    const r3Stale = makeBaseState({ runId: "run-a", revision: 3 });
+    const r6Newer = makeBaseState({ runId: "run-a", revision: 6 });
+    const newRun = makeBaseState({ runId: "run-b", revision: 1 });
+
+    expect(mergeAuthoritativeState(r5, r3Stale).revision).toBe(5);
+    expect(mergeAuthoritativeState(r5, r6Newer).revision).toBe(6);
+    expect(mergeAuthoritativeState(r5, newRun).runId).toBe("run-b");
+
+    // Verify recovery_complete ledger receipt after Terse control_returned
+    const eventsWithReturn: MissionEvent[] = [
+      {
+        id: "a:9",
+        runId: "run-a",
+        revision: 9,
+        timestamp: "2026-10-31T20:40:31.725Z",
+        type: "control_returned",
+        pilot: "rescuer",
+        controlEpoch: 3,
+        commandId: "cmd-9",
+        position: [0.56, 0, -0.82],
+      },
+    ];
+    const timeline = buildProtocolTimeline(eventsWithReturn, [
+      {
+        at: "2026-10-31T20:40:38.963Z",
+        role: "rescuer",
+        dir: "out",
+        to: "navigator",
+        messageId: "242387308902408192",
+        type: "recovery_complete",
+        runId: "run-a",
+      },
+      {
+        at: "2026-10-31T20:40:41.324Z",
+        role: "navigator",
+        dir: "in",
+        from: "rescuer",
+        messageId: "242387308902408192",
+        type: "recovery_complete",
+        runId: "run-a",
+      },
+    ]);
+    const dmRow = timeline.find(
+      (t) => t.relayMessageId === "242387308902408192",
+    );
+    expect(dmRow?.summary).toContain("@navigator receipt verified");
   });
 });

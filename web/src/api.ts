@@ -243,13 +243,15 @@ export class CounterwhorlApiClient {
     runId: string,
     signal?: AbortSignal,
   ): Promise<PeerLedgerEntry[]> {
-    if (this.baseUrl !== "") return [];
+    if (typeof window === "undefined") return [];
     try {
       const res = await fetch(
         `/local/relay-ledger?runId=${encodeURIComponent(runId)}`,
         { method: "GET", headers: { accept: "application/json" }, signal },
       );
       if (!res.ok) return [];
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) return [];
       const data = (await res.json()) as { entries?: unknown };
       return Array.isArray(data.entries)
         ? (data.entries as PeerLedgerEntry[])

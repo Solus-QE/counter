@@ -2,11 +2,11 @@
   color-scheme: dark;
 
   /* Achromatic dark neutral surface ladder (Linear-inspired) */
-  --bg-canvas: #08090c;
-  --bg-console: #0b0d11;
-  --bg-header: #0d0f14;
-  --bg-sidebar: #0e1015;
-  --bg-elevated: #14171f;
+  --bg-canvas: #0d0e0c;
+  --bg-console: #11120f;
+  --bg-header: #151610;
+  --bg-sidebar: #131410;
+  --bg-elevated: #1b1c17;
   --bg-card: rgba(255, 255, 255, 0.018);
   --bg-control: rgba(255, 255, 255, 0.038);
   --bg-control-hover: rgba(255, 255, 255, 0.075);
@@ -17,9 +17,9 @@
   --border-strong: rgba(255, 255, 255, 0.16);
 
   /* Perceptually balanced text hierarchy */
-  --text-primary: #eceef3;
-  --text-secondary: #949ba8;
-  --text-muted: #5e6573;
+  --text-primary: #ece9df;
+  --text-secondary: #aaa99f;
+  --text-muted: #83857b;
 
   /* Restrained scientific accents */
   --cyan: #38bdf8;
@@ -126,6 +126,7 @@ code {
 }
 
 .wordmark {
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -231,12 +232,26 @@ code {
   background: var(--green);
 }
 .link-item.health-ok .link-state {
-  display: none;
+  color: var(--green);
 }
 
-.link-item.health-bad {
-  color: var(--red);
+.link-item.health-connecting .link-dot {
+  background: var(--amber);
 }
+.link-item.health-connecting .link-state {
+  color: var(--amber);
+}
+
+.link-item.health-offline {
+  color: var(--text-secondary);
+}
+.link-item.health-offline .link-dot {
+  background: var(--text-muted);
+}
+.link-item.health-offline .link-state {
+  color: var(--text-muted);
+}
+
 .link-item.health-bad .link-dot {
   background: var(--red);
 }
@@ -508,13 +523,20 @@ code {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  background: radial-gradient(
-    circle at 50% 50%,
-    #0d1016 0%,
-    #090b0f 56%,
-    #07080b 100%
-  );
+  background: var(--bg-canvas);
+  isolation: isolate;
   overflow: hidden;
+}
+
+.cesure-background {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+  opacity: 0.34;
+  pointer-events: none;
 }
 
 #sphere-canvas {
@@ -525,6 +547,7 @@ code {
   display: block;
   cursor: grab;
   touch-action: none;
+  z-index: 1;
 }
 #sphere-canvas:active {
   cursor: grabbing;
@@ -549,6 +572,9 @@ code {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  background: rgba(13, 14, 12, 0.92);
+  padding: 5px 7px;
+  border-radius: 2px;
 }
 
 .hud-kicker {
@@ -673,8 +699,8 @@ code {
 
 /* ================= PROMINENT LIVE PROTOCOL TIMELINE ================= */
 .protocol-panel {
-  height: 212px;
-  flex: 0 0 212px;
+  height: 228px;
+  flex: 0 0 228px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -684,8 +710,8 @@ code {
 }
 
 .protocol-header {
-  height: 36px;
-  flex: 0 0 36px;
+  height: 34px;
+  flex: 0 0 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -774,10 +800,10 @@ code {
 }
 
 .protocol-cols {
-  height: 23px;
-  flex: 0 0 23px;
+  height: 22px;
+  flex: 0 0 22px;
   display: grid;
-  grid-template-columns: 94px 118px minmax(0, 1fr) 152px 82px;
+  grid-template-columns: 94px 118px minmax(0, 1fr) 168px 82px;
   align-items: center;
   gap: 12px;
   padding: 0 16px;
@@ -798,7 +824,7 @@ code {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 3px 0;
+  padding: 2px 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
@@ -826,12 +852,12 @@ code {
 
 .pt-row {
   display: grid;
-  grid-template-columns: 94px 118px minmax(0, 1fr) 152px 82px;
+  grid-template-columns: 94px 118px minmax(0, 1fr) 168px 82px;
   align-items: center;
   gap: 12px;
-  padding: 3.5px 16px;
+  padding: 2.5px 16px;
   font-size: 11.5px;
-  line-height: 1.4;
+  line-height: 1.32;
   min-width: 0;
 }
 
@@ -892,6 +918,12 @@ code {
 .relay-chip:hover {
   border-color: var(--border-strong);
   background: rgba(255, 255, 255, 0.09);
+}
+
+.relay-chip.relay-chip-cited {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.02);
+  border-style: dashed;
 }
 
 .transport-http {
@@ -1373,7 +1405,7 @@ code {
 
   .protocol-cols,
   .pt-row {
-    grid-template-columns: 88px 110px minmax(0, 1fr) 142px 78px;
+    grid-template-columns: 88px 110px minmax(0, 1fr) 158px 78px;
     gap: 10px;
     padding-left: 14px;
     padding-right: 14px;
@@ -1382,8 +1414,31 @@ code {
 
 @media (max-height: 830px) {
   .protocol-panel {
-    height: 188px;
-    flex-basis: 188px;
+    height: 204px;
+    flex-basis: 204px;
+  }
+
+  .protocol-header {
+    height: 32px;
+    flex-basis: 32px;
+  }
+
+  .protocol-cols {
+    height: 20px;
+    flex-basis: 20px;
+  }
+
+  .pt-row {
+    padding-top: 2px;
+    padding-bottom: 2px;
+    font-size: 11px;
+    line-height: 1.28;
+  }
+
+  .relay-chip {
+    padding: 0.5px 5px;
+    font-size: 10px;
+    line-height: 1.25;
   }
 
   .side-section {

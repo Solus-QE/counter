@@ -59,13 +59,20 @@ class Bus {
   peerSent: Array<{id: string; from: string; to: string; text: string}>=[];
   /** Simulates a peer DM the Relay service accepted but never delivered. */
   dropPeer?: (from: string,text: string)=>boolean;
+  /** Simulated Relay latency: how long send() blocks, and how long delivery takes. */
+  sendLatency?: (from: string,text: string,index: number)=>number;
+  deliveryDelay?: (from: string,text: string,index: number)=>number;
   readonly ids={coordinator:{id:"id-c",name:"counterwhorl-coordinator"},navigator:{id:"id-n",name:"navigator"},rescuer:{id:"id-r",name:"rescuer"}};
   constructor() {
     for(const pilot of ["navigator","rescuer"] as const) this.store.setSetting(`relay.${pilot}.token`,TOKENS[pilot]);
   }
   api(role: PilotId): PilotApi { return new HttpPilotApi(this.url,TOKENS[role]); }
   link(role: PilotId): RelayLink {
-    const transport: Transport={self:this.ids[role],send:async(to,text)=>this.post(role,to,text)};
+    const transport: Transport={self:this.ids[role],send:async(to,text)=>{
+      const latency=this.sendLatency?.(role,text,this.peerSent.length)??0;
+      if(latency) await Bun.sleep(latency);
+      return this.post(role,to,text);
+    }};
     const peer=role==="navigator"?"rescuer":"navigator";
     return this.links[role]=new RelayLink(role,transport,this.ids.coordinator,this.ids[peer]);
   }
@@ -73,7 +80,7 @@ class Bus {
     const id=`relay-${++this.seq}`;
     this.peerSent.push({id,from,to,text});
     if(this.dropPeer?.(from,text)) {this.dropPeer=undefined;return id;}
-    setTimeout(()=>this.links[to as PilotId].ingest(this.message(id,from,text)),5);
+    setTimeout(()=>this.links[to as PilotId].ingest(this.message(id,from,text)),this.deliveryDelay?.(from,text,this.peerSent.length-1)??5);
     return id;
   }
   message(id: string,from: PilotId,text: string): RelayMessage {
@@ -111,8 +118,9 @@ const fast={navigatorStepMs:5,rescuerStepMs:5,pollMs:50,peerResendMs:500,maxRunI
 let bus: Bus|undefined;
 const stoppers: Array<{stop(): void}>=[];
 afterEach(async()=>{for(const a of stoppers.splice(0)) a.stop();await bus?.close();bus=undefined;});
-function crew(options: {choose?: typeof chooseRecovery; config?: typeof fast; navApi?: (api: PilotApi)=>PilotApi; resApi?: (api: PilotApi)=>PilotApi; rescuer?: boolean}={}) {
+function crew(options: {choose?: typeof chooseRecovery; config?: typeof fast; navApi?: (api: PilotApi)=>PilotApi; resApi?: (api: PilotApi)=>PilotApi; rescuer?: boolean; setup?: (bus: Bus)=>void}={}) {
   bus=new Bus();
+  options.setup?.(bus);
   const config=options.config??fast;
   const nav=new NavigatorAgent((options.navApi??(a=>a))(bus.api("navigator")),bus.link("navigator"),config);
   nav.start();
@@ -289,6 +297,17 @@ describe("two-agent rescue protocol (real coordinator + HTTP route, in-memory Re
     expect(bus.peerTypes().filter(t=>t==="recovery_request").length).toBe(2);
     expect(s.events.filter(e=>e.type==="handoff_granted").length).toBe(1);
   });
+  test("a slow Relay resend never delays the Navigator's resume after Terse returns control", async () => {
+    // First request arrives late, so a resend starts; that resend's Relay send then hangs for 3 s.
+    const {bus}=crew({setup:b=>{
+      b.deliveryDelay=(from,text,i)=>from==="navigator"&&i===0?700:5;
+      b.sendLatency=(from,text,i)=>from==="navigator"&&text.includes('"recovery_request"')&&i>0?3000:0;
+    }});
+    await bus.startMission({position:[0,0,-1],goal:[0,0,1]});
+    const s=await bus.until(s=>s.phase==="completed");
+    const at=(type: string)=>Date.parse(s.events.find(e=>e.type===type)!.timestamp);
+    expect(at("mission_completed")-at("control_returned")).toBeLessThan(1500);
+  },15000);
   test("Rescuer rejects a late/forged recovery request that Terse does not hold", async () => {
     const {bus,res}=crew();
     await bus.startMission({position:[1,0,0],goal:[0,0,1]});

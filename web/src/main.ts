@@ -5,6 +5,7 @@ import type {
   MissionState,
   Vec3,
 } from "../../shared/contract";
+import { CesureBackground } from "./cesure-background";
 import {
   CounterwhorlApiClient,
   CounterwhorlApiError,
@@ -28,14 +29,17 @@ import {
   type ProjectionMode,
 } from "./sphere-view";
 import {
+  deriveRelayHealth,
   deriveTelemetry,
+  mergeAuthoritativeState,
   type ProtocolTimelineEntry,
   type RecoveryChecklistStep,
+  type RelayHealthInfo,
   type TelemetrySnapshot,
 } from "./telemetry";
 
 const STORAGE_RUN_KEY = "counterwhorl.activeRunId";
-const RECOVERY_WATCH_TIMEOUT_MS = 35_000;
+const RECOVERY_WATCH_TIMEOUT_MS = 45_000;
 
 interface ScenarioPreset {
   position: Vec3;
@@ -81,6 +85,7 @@ function fmtClockCompact(iso: string): string {
 class CounterwhorlApp {
   private api = new CounterwhorlApiClient();
   private sphere: SphereVisualizer;
+  private background: CesureBackground;
 
   private generation = 0;
   private booting = true;
@@ -111,6 +116,7 @@ class CounterwhorlApp {
   private pollTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
+    this.background = new CesureBackground(el<HTMLCanvasElement>("cesure-background"));
     const sphereCanvas = el<HTMLCanvasElement>("sphere-canvas");
     this.sphere = new SphereVisualizer(sphereCanvas);
 
@@ -213,7 +219,7 @@ class CounterwhorlApp {
       }, 900);
     });
 
-    // Copy Relay Message ID chip inside Live Protocol Timeline
+    // Copy Relay Message ID chip inside Mission record
     el("protocol-timeline-list").addEventListener("click", (e: MouseEvent) => {
       const target = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>(
         ".relay-chip",
@@ -377,6 +383,33 @@ class CounterwhorlApp {
     this.eventCursor = this.events.at(-1)?.revision ?? this.eventCursor;
   }
 
+  /** Applies an authoritative snapshot while strictly ignoring stale state revisions. */
+  private applyMissionSnapshot(snapshot: MissionState): MissionState {
+    const prevRev = this.mission?.runId === snapshot.runId ? this.mission.revision : -1;
+    this.mission = mergeAuthoritativeState(this.mission, snapshot);
+    if (this.events.length === 0 || snapshot.revision >= prevRev) {
+      this.mergeEvents(snapshot.events);
+    }
+    return this.mission;
+  }
+
+  /** Refreshes authoritative state + event cursor from `:3001` (used on 409 conflict recovery). */
+  private async refreshAuthoritativeState(
+    runId: string,
+  ): Promise<MissionState | null> {
+    try {
+      const [snapshot, delta] = await Promise.all([
+        this.api.getMission(runId),
+        this.api.getEvents(runId, this.eventCursor),
+      ]);
+      const merged = this.applyMissionSnapshot(snapshot);
+      this.mergeEvents(delta.events);
+      return merged;
+    } catch {
+      return null;
+    }
+  }
+
   private adoptNewMission(state: MissionState): void {
     this.persistActiveRunId(state.runId);
     this.mission = state;
@@ -449,6 +482,7 @@ class CounterwhorlApp {
       const health = await this.api.getHealth();
       if (gen !== this.generation) return;
       this.health = health;
+      this.booting = false;
 
       let targetRunId = this.mission?.runId ?? null;
       if (!this.mission || this.mission.phase === "completed") {
@@ -462,22 +496,60 @@ class CounterwhorlApp {
       }
       if (!targetRunId) return;
 
-      const challenged = await this.api.forceChallenge(targetRunId);
+      // Refresh and retry up to 3 attempts if judge challenge races a pilot movement and returns 409
+      let challenged: MissionState | null = null;
+      let lastChallengeError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          challenged = await this.api.forceChallenge(targetRunId);
+          break;
+        } catch (err) {
+          lastChallengeError = err;
+          if (err instanceof CounterwhorlApiError && err.status === 409) {
+            const refreshed = await this.refreshAuthoritativeState(targetRunId);
+            if (gen !== this.generation) return;
+            if (refreshed?.phase === "completed") {
+              const restarted = await this.api.startMission({
+                position: this.stagedPosition,
+                goal: this.stagedGoal,
+              });
+              if (gen !== this.generation) return;
+              this.adoptNewMission(restarted);
+              targetRunId = restarted.runId;
+            } else {
+              await new Promise((r) => setTimeout(r, 60));
+            }
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!challenged) {
+        throw lastChallengeError ?? new Error("Blind-spot challenge failed");
+      }
+
       if (gen !== this.generation) return;
-      this.mission = challenged;
-      this.mergeEvents(challenged.events);
+      const merged = this.applyMissionSnapshot(challenged);
       this.lastError = null;
       this.alertDismissedForMessage = null;
       this.recoveryWatchFailedReason = null;
 
-      if (health.relay) {
+      const relayInfo = deriveRelayHealth(false, health);
+      if (relayInfo.status === "online" || relayInfo.status === "connecting") {
         this.recoveryWatchArmedAt = Date.now();
-        this.recoveryWatchStartRevision = challenged.revision;
+        this.recoveryWatchStartRevision = merged.revision;
       } else {
         this.recoveryWatchArmedAt = null;
       }
     } catch (error) {
       if (gen !== this.generation) return;
+      if (
+        error instanceof CounterwhorlApiError &&
+        error.status === 409 &&
+        this.activeRunId
+      ) {
+        await this.refreshAuthoritativeState(this.activeRunId);
+      }
       this.captureError(error);
     } finally {
       this.busyAction = false;
@@ -518,6 +590,11 @@ class CounterwhorlApp {
   private captureError(error: unknown): void {
     if (error instanceof CounterwhorlApiError) {
       this.lastError = { code: error.code, message: error.message };
+      if (error.status === 409 && this.activeRunId) {
+        void this.refreshAuthoritativeState(this.activeRunId).then(() => {
+          this.renderAll();
+        });
+      }
     } else {
       this.lastError = {
         code: "UNAVAILABLE",
@@ -529,10 +606,33 @@ class CounterwhorlApp {
 
   private async pollLoop(): Promise<void> {
     await this.pollOnce();
+    const relayConnecting =
+      deriveRelayHealth(this.booting, this.health).status === "connecting";
+    const awaitingCompletionReceipt = Boolean(
+      this.mission?.phase === "completed" &&
+        this.events.some((e) => e.type === "control_returned") &&
+        !this.peerLedger.some(
+          (p) =>
+            p.type === "recovery_complete" &&
+            p.role === "navigator" &&
+            p.dir === "in",
+        ) &&
+        (() => {
+          const doneEv = [...this.events]
+            .reverse()
+            .find((e) => e.type === "mission_completed");
+          return doneEv
+            ? Date.now() - Date.parse(doneEv.timestamp) < 60_000
+            : false;
+        })(),
+    );
     const fast =
-      this.mission &&
-      (this.mission.phase !== "completed" || this.recoveryWatchArmedAt !== null);
-    const delay = fast ? 380 : 1400;
+      relayConnecting ||
+      awaitingCompletionReceipt ||
+      (this.mission &&
+        (this.mission.phase !== "completed" ||
+          this.recoveryWatchArmedAt !== null));
+    const delay = fast ? 380 : 1200;
     this.pollTimer = setTimeout(() => void this.pollLoop(), delay);
   }
 
@@ -567,31 +667,32 @@ class CounterwhorlApp {
           this.api.getPeerLedger(this.activeRunId),
         ]);
         if (gen !== this.generation) return;
-        this.mission = snapshot;
-        if (this.events.length === 0) {
-          this.mergeEvents(snapshot.events);
-        }
+        const authoritative = this.applyMissionSnapshot(snapshot);
         this.mergeEvents(delta.events);
         this.peerLedger = ledger;
 
         if (this.recoveryWatchArmedAt !== null) {
+          const relayInfo = deriveRelayHealth(false, this.health);
           const hasReturned = this.events.some(
             (e) =>
               e.type === "control_returned" &&
               e.revision > this.recoveryWatchStartRevision,
           );
-          if (hasReturned || snapshot.phase === "completed") {
+          if (hasReturned || authoritative.phase === "completed") {
             this.recoveryWatchArmedAt = null;
             this.recoveryWatchFailedReason = null;
-          } else if (!this.health?.relay) {
-            this.recoveryWatchFailedReason = `RELAY_UNAVAILABLE: Agent Relay disconnected during recovery (${this.health?.relayError ?? "transport lost"}).`;
+          } else if (
+            relayInfo.status === "offline" ||
+            relayInfo.status === "errored"
+          ) {
+            this.recoveryWatchFailedReason = `RELAY_${relayInfo.status === "errored" ? "ERROR" : "OFFLINE"}: Agent Relay ${relayInfo.label} during recovery (${relayInfo.detail}).`;
             this.recoveryWatchArmedAt = null;
           } else if (
             Date.now() - this.recoveryWatchArmedAt > RECOVERY_WATCH_TIMEOUT_MS &&
-            snapshot.revision === this.recoveryWatchStartRevision
+            authoritative.revision === this.recoveryWatchStartRevision
           ) {
             this.recoveryWatchFailedReason =
-              "AGENT_TIMEOUT: No autonomous @navigator / @rescuer handoff received over Agent Relay within 35s. Ensure agent worker processes are running.";
+              "AGENT_TIMEOUT: No autonomous @navigator / @rescuer handoff received over Agent Relay within 45s. Ensure agent worker processes are running.";
             this.recoveryWatchArmedAt = null;
           }
         }
@@ -629,6 +730,7 @@ class CounterwhorlApp {
     this.lastSparklineSnap = snap;
 
     document.body.dataset.lifecycle = snap.lifecycle;
+    this.background.setPhase(snap.lifecycle === "recovering" ? "recovering" : snap.lifecycle === "stalled" ? "stalled" : snap.lifecycle === "completed" ? "completed" : "idle");
 
     // 1. Header status & subsystem health links
     const badge = el("lifecycle-badge");
@@ -636,21 +738,8 @@ class CounterwhorlApp {
     el("lifecycle-label").textContent = snap.lifecycleLabel;
     el("lifecycle-detail").textContent = snap.lifecycleDetail;
 
-    this.renderHealthLink(
-      "health-terse",
-      "health-terse-val",
-      this.health?.terse,
-      "online",
-      "offline",
-    );
-    this.renderHealthLink(
-      "health-relay",
-      "health-relay-val",
-      this.health?.relay,
-      "connected",
-      "offline",
-      this.health?.relayError,
-    );
+    this.renderTerseHealthLink(this.health?.terse);
+    this.renderRelayHealthLink(snap.relayHealth);
 
     // Header button states
     el<HTMLButtonElement>("btn-start").disabled = this.busyAction;
@@ -659,12 +748,12 @@ class CounterwhorlApp {
     el<HTMLButtonElement>("btn-break").disabled = this.busyAction;
 
     // Slim diagnostic strip
-    this.renderAlertBanner();
+    this.renderAlertBanner(snap.relayHealth);
 
     // 2. 7-stage Recovery State Checklist
     this.renderRecoveryChecklist(snap.recoverySteps, snap);
 
-    // 3. Autonomous Agents Summary & Technical Inspection
+    // 3. Pilots Summary & Technical Inspection
     this.renderAgentsAndTechnical(snap);
 
     // 4. Globe HUD & 3D Attitude Visualizer
@@ -694,33 +783,51 @@ class CounterwhorlApp {
       isEscaped: snap.isEscaped,
     });
 
-    // 5. Prominent Live Protocol Timeline
+    // 5. Prominent Mission record
     this.renderProtocolTimeline(snap.protocolTimeline, snap);
   }
 
-  private renderHealthLink(
-    chipId: string,
-    valId: string,
-    ok: boolean | undefined,
-    okText: string,
-    badText: string,
-    errorTooltip?: string,
-  ): void {
-    const chip = el(chipId);
-    const val = el(valId);
+  private renderTerseHealthLink(ok: boolean | undefined): void {
+    const chip = el("health-terse");
+    const val = el("health-terse-val");
     if (ok === undefined) {
-      chip.className = "link-item link-unknown";
-      val.textContent = "sync";
+      chip.className = "link-item health-connecting";
+      chip.dataset.terseState = "connecting";
+      val.textContent = "connecting";
+      chip.title = "Connecting to Terse Durable Actor runtime…";
       return;
     }
     chip.className = `link-item ${ok ? "health-ok" : "health-bad"}`;
-    val.textContent = ok ? okText : badText;
-    if (errorTooltip && !ok) {
-      chip.title = errorTooltip;
+    chip.dataset.terseState = ok ? "online" : "offline";
+    val.textContent = ok ? "online" : "offline";
+    chip.title = ok
+      ? "Terse Durable Actor runtime online"
+      : "Terse Durable Actor runtime unreachable";
+  }
+
+  private renderRelayHealthLink(relayHealth: RelayHealthInfo): void {
+    const chip = el("health-relay");
+    const val = el("health-relay-val");
+    chip.dataset.relayState = relayHealth.status;
+    val.textContent = relayHealth.label;
+    chip.title = relayHealth.detail;
+    switch (relayHealth.status) {
+      case "online":
+        chip.className = "link-item health-ok";
+        break;
+      case "connecting":
+        chip.className = "link-item health-connecting";
+        break;
+      case "offline":
+        chip.className = "link-item health-offline";
+        break;
+      case "errored":
+        chip.className = "link-item health-bad";
+        break;
     }
   }
 
-  private renderAlertBanner(): void {
+  private renderAlertBanner(relayHealth: RelayHealthInfo): void {
     const banner = el("alert-banner");
     let code = "";
     let msg = "";
@@ -738,9 +845,12 @@ class CounterwhorlApp {
     } else if (this.lastError) {
       code = this.lastError.code;
       msg = this.lastError.message;
-    } else if (this.health && !this.health.relay && this.mission) {
+    } else if (relayHealth.status === "errored") {
+      code = "RELAY_ERROR";
+      msg = `${relayHealth.detail}`;
+    } else if (relayHealth.status === "offline" && this.mission) {
       code = "RELAY_OFFLINE";
-      msg = `${this.health.relayError ?? "Agent Relay disconnected"} — Terse HTTP challenge succeeded, but autonomous @navigator / @rescuer handoff requires Agent Relay.`;
+      msg = `${relayHealth.detail}`;
     }
 
     if (!msg || this.alertDismissedForMessage === msg) {
@@ -791,7 +901,7 @@ class CounterwhorlApp {
         const badgeHtml = step.badge
           ? `<span class="r-badge">${escapeHtml(step.badge)}</span>`
           : "";
-        return `<li class="r-step is-${step.status}" data-step-id="${step.id}" title="${escapeHtml(`${step.title} — ${step.detail}`)}">
+        return `<li class="r-step is-${step.status}" data-step-id="${step.id}" title="${escapeHtml(`${step.title}: ${step.detail}`)}">
           <span class="r-marker" aria-hidden="true">${markerSymbol}</span>
           <div class="r-copy">
             <span class="r-title">${escapeHtml(step.title)}</span>
@@ -888,7 +998,7 @@ class CounterwhorlApp {
     // Technical inspection fields (live-updated even while collapsed)
     el("meta-run-id").textContent = this.mission
       ? shortId(this.mission.runId, 16)
-      : "—";
+      : "n/a";
     el("meta-run-btn").title = this.mission
       ? `Run ID: ${this.mission.runId} (click to copy)`
       : "No active run";
@@ -898,10 +1008,10 @@ class CounterwhorlApp {
       [...this.events]
         .reverse()
         .find((e) => e.type === "recovery_requested")?.detail ??
-      "—";
-    const propId = snap.decision.proposalId ?? "—";
-    el("res-req-id").textContent = reqId === "—" ? "—" : shortId(reqId, 12);
-    el("res-prop-id").textContent = propId === "—" ? "—" : shortId(propId, 14);
+      "n/a";
+    const propId = snap.decision.proposalId ?? "n/a";
+    el("res-req-id").textContent = reqId === "n/a" ? "n/a" : shortId(reqId, 12);
+    el("res-prop-id").textContent = propId === "n/a" ? "n/a" : shortId(propId, 14);
 
     el("metric-recoveries").textContent = String(
       snap.outcomes.terseConfirmedRecoveries,
@@ -948,11 +1058,15 @@ class CounterwhorlApp {
     } else if (!this.mission) {
       authBox.className = "globe-authority auth-standby";
       kicker.textContent = "SPATIAL ATTITUDE · S²";
-      authTitle.textContent = "Standby — Pre-Launch";
+      authTitle.textContent = "Standby";
       authSub.textContent =
-        this.health && !this.health.relay
-          ? "Terse online · Agent Relay disconnected"
-          : `Initial attitude ${deg}° from target +g`;
+        snap.relayHealth.status === "online"
+          ? `Initial attitude ${deg}° from target +g`
+          : snap.relayHealth.status === "connecting"
+            ? "Terse online · Agent Relay bridge connecting…"
+            : snap.relayHealth.status === "errored"
+              ? `Terse online · Agent Relay error (${snap.relayHealth.detail})`
+              : "Terse online · Agent Relay offline";
     } else if (snap.lifecycle === "completed") {
       authBox.className = "globe-authority auth-completed";
       kicker.textContent = `TERSE r${this.mission.revision} · EPOCH e${this.mission.controlEpoch}`;
@@ -966,9 +1080,13 @@ class CounterwhorlApp {
       kicker.textContent = `BLIND SPOT SINGULARITY · r${this.mission.revision}`;
       authTitle.textContent = "Navigator Stalled at −g";
       authSub.textContent =
-        this.health && !this.health.relay
-          ? "Gradient 0% · Agent Relay offline (handoff blocked)"
-          : "Gradient 0% · requesting @rescuer via Agent Relay";
+        snap.relayHealth.status === "errored"
+          ? `Gradient 0% · Agent Relay error (${snap.relayHealth.detail})`
+          : snap.relayHealth.status === "offline"
+            ? "Gradient 0% · Agent Relay offline (handoff blocked)"
+            : snap.relayHealth.status === "connecting"
+              ? "Gradient 0% · Agent Relay connecting…"
+              : "Gradient 0% · requesting @rescuer via Agent Relay";
     } else if (this.mission.activePilot === "rescuer") {
       authBox.className = "globe-authority auth-rescuer";
       kicker.textContent = `TERSE EPOCH e${this.mission.controlEpoch} · RESCUER AUTHORITY`;
@@ -1043,11 +1161,13 @@ class CounterwhorlApp {
     el("tl-latency").textContent =
       snap.outcomes.recoveryLatencyMs !== null
         ? `${(snap.outcomes.recoveryLatencyMs / 1000).toFixed(2)}s`
-        : snap.lifecycle === "failed" || (this.health && !this.health.relay)
-          ? "—"
+        : snap.lifecycle === "failed" ||
+            snap.relayHealth.status === "offline" ||
+            snap.relayHealth.status === "errored"
+          ? "n/a"
           : snap.handoffStage !== "idle" && snap.handoffStage !== "confirmed"
             ? "In flight…"
-            : "—";
+            : "n/a";
 
     const liveDot = el("protocol-live-dot");
     liveDot.className = `protocol-dot ${
@@ -1065,7 +1185,7 @@ class CounterwhorlApp {
     // 2. Unified Live Protocol Stream
     const container = el("protocol-timeline-list");
     if (entries.length === 0) {
-      const emptyHtml = `<div class="console-empty">No protocol events yet — click <strong>Break Navigator</strong> to observe real Agent Relay handoff and Terse epoch fencing.</div>`;
+      const emptyHtml = `<div class="console-empty">Start a mission, then use <strong>Break Navigator</strong> to observe recovery.</div>`;
       if (this.lastTimelineHtml !== emptyHtml) {
         this.lastTimelineHtml = emptyHtml;
         container.innerHTML = emptyHtml;
@@ -1077,9 +1197,17 @@ class CounterwhorlApp {
       .slice(0, 80)
       .map((entry) => {
         const revCell = entry.revisionLabel;
+        const relayDisplay = entry.relayMessageId
+          ? `${entry.relayCited ? "↳ " : ""}${shortId(entry.relayMessageId, 22)}`
+          : "";
+        const relayTitle = entry.relayMessageId
+          ? entry.relayCited
+            ? `Terse transition citing peer Relay request ID: ${entry.relayMessageId} (click to copy)`
+            : `Verified Agent Relay message ID: ${entry.relayMessageId} (click to copy)`
+          : "";
         const relayCell = entry.relayMessageId
-          ? `<button type="button" class="relay-chip" data-relay-id="${escapeHtml(entry.relayMessageId)}" title="Verified Agent Relay message ID: ${escapeHtml(entry.relayMessageId)} (click to copy)">${escapeHtml(shortId(entry.relayMessageId, 15))}</button>`
-          : `<span class="transport-http" title="Direct HTTP request (no Agent Relay message)">${escapeHtml(entry.transportLabel)}</span>`;
+          ? `<button type="button" class="relay-chip${entry.relayCited ? " relay-chip-cited" : ""}" data-relay-id="${escapeHtml(entry.relayMessageId)}" title="${escapeHtml(relayTitle)}">${escapeHtml(relayDisplay)}</button>`
+          : `<span class="transport-http" title="Authenticated HTTP request (no Agent Relay message)">${escapeHtml(entry.transportLabel)}</span>`;
         return `<div class="pt-row">
           <span class="pt-rev">${escapeHtml(revCell)}</span>
           <span class="pt-actor tone-${entry.authorityTone}">${escapeHtml(entry.authorityLabel)}</span>

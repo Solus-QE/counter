@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import type { CoordinatorMessage } from "../shared/contract";
 import { peerOf, type AgentConfig, type Role } from "./config";
 import { decodeCoordinator, decodePeer, type PeerMessage } from "./protocol";
+import { RelayRetryGate, relayRetryDelay } from "../shared/relay-retry";
 
 export interface Identity { id: string; name: string }
 export interface Transport {
@@ -11,9 +12,6 @@ export interface Transport {
   send(to: string,text: string,idempotencyKey: string): Promise<string>;
 }
 export type IngestOutcome = "coordinator"|"peer"|"duplicate"|"self"|"unknown_sender"|"invalid";
-
-/** Jittered exponential backoff for Relay writes; the service sheds load with 503 + Retry-After. */
-export const backoff=(attempt: number)=>Math.min(30000,1000*2**attempt)*(0.5+Math.random()/2);
 
 /**
  * Retries a Relay call on retryable failures (503 database_overloaded, 429, transport), waiting the server's
@@ -25,7 +23,7 @@ export async function withRelayRetry<T>(operation: ()=>Promise<T>,log: (text: st
     catch(error) {
       const e=error as {retryable?: boolean; retryAfterMs?: number; status?: number; message?: string};
       if(attempt+1>=attempts||!(e.retryable||e.status===429||(e.status??0)>=500)) throw error;
-      const wait=e.retryAfterMs??backoff(attempt);
+      const wait=relayRetryDelay(error,attempt);
       log(`Relay busy (${e.status??"?"} ${e.message?.slice(0,60)??""}); retrying in ${Math.round(wait)} ms`);
       await new Promise(resolve=>setTimeout(resolve,wait));
     }
@@ -105,27 +103,26 @@ export interface Connection { link: RelayLink; token: string; stop: ()=>Promise<
 /** Connects this process's own Relay identity: live listeners plus durable inbox replay. */
 export async function connect(config: AgentConfig,options: {ack?: (outcome: IngestOutcome)=>boolean}={}): Promise<Connection> {
   const log=logger(config.role);
-  const relay=new AgentRelay({workspaceKey:config.workspaceKey,onError:()=>log("Relay transport error")});
-  const self=await withRelayRetry(()=>client(relay,config),log);
+  const relay=new AgentRelay({workspaceKey:config.workspaceKey,retryPolicy:{maxRetries:0},onError:()=>log("Relay transport error")});
+  const self=await withRelayRetry(()=>client(relay,config),log,Infinity);
   const resolve=async(name: string): Promise<Identity>=>{
-    const agent=await withRelayRetry(()=>self.agents.get(name),log);
+    const agent=await withRelayRetry(()=>self.agents.get(name),log,Infinity);
     return {id:agent.id,name:agent.name};
   };
   const coordinator=await resolve(config.names.coordinator);
   const peer=await resolve(config.names[peerOf(config.role)]);
   const transport: Transport={
     self:{id:self.id,name:self.name},
-    send:async(to,text,idempotencyKey)=>(await self.sendMessage({to:`@${to}`,text,idempotencyKey})).messageId,
+    send:async(to,text,idempotencyKey)=>(await withRelayRetry(()=>self.sendMessage({to:`@${to}`,text,idempotencyKey}),log)).messageId,
   };
   const link=new RelayLink(config.role,transport,coordinator,peer,{log,record:ledger(config.role)});
   const unsubscribers=(["dm.received","message.created"] as const).map(selector=>relay.addListener(selector,({message})=>{link.ingest(message);}));
   const ack=options.ack??(()=>true);
   let draining=false;
-  let failures=0;
-  let nextDrain=0;
+  const inboxRetry=new RelayRetryGate();
   // Live events are the fast path; the inbox is the durable backstop, polled gently and backed off on 503s.
   const drain=async()=>{
-    if(draining||Date.now()<nextDrain) return;
+    if(draining||!inboxRetry.ready()) return;
     draining=true;
     try {
       const {items}=await self.inbox.list({limit:100});
@@ -133,10 +130,11 @@ export async function connect(config: AgentConfig,options: {ack?: (outcome: Inge
         const outcome=link.ingest(item.message);
         if(ack(outcome)) await self.inbox.ack({inboxItemId:item.id});
       }
-      failures=0;
-    } catch {
-      nextDrain=Date.now()+backoff(failures++);
-      log("inbox replay deferred (Relay busy)");
+      inboxRetry.succeeded();
+    } catch(error) {
+      const wait=inboxRetry.failed(error);
+      const e=error as {status?:number;rawCode?:string};
+      log(`inbox replay deferred (${e.status??"transport"} ${e.rawCode??"failure"}); retry after ${wait} ms`);
     }
     finally {draining=false;}
   };

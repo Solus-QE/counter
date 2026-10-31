@@ -7,6 +7,7 @@ import {
 import type { CoordinatorMessage, PilotId } from "../shared/contract";
 import { agentRequestSchema } from "../shared/validation";
 import { Coordinator } from "./coordinator";
+import { RelayRetryGate } from "../shared/relay-retry";
 
 export class RelayBridge {
   private relay?: AgentRelay;
@@ -22,7 +23,11 @@ export class RelayBridge {
   private stopped = false;
   private inFlight = new Map<string, Promise<void>>();
   private lastSuccess = 0;
-  lastError: string | undefined;
+  private readonly inboxRetry = new RelayRetryGate();
+  private readonly publishRetry = new RelayRetryGate();
+  private publishError?: string;
+  private inboxError: string | undefined;
+  get lastError(): string | undefined { return this.inboxError ?? this.publishError; }
   readonly names: Record<PilotId, string>;
   constructor(
     private coordinator: Coordinator,
@@ -46,14 +51,14 @@ export class RelayBridge {
       !!this.client &&
       this.identities.size === 2 &&
       !this.lastError &&
-      Date.now() - this.lastSuccess < 10000
+      Date.now() - this.lastSuccess < 30000
     );
   }
   async start(): Promise<void> {
-    if (this.stopped || this.connecting) return;
+    if (this.stopped || this.connecting || !this.inboxRetry.ready()) return;
     if (this.timer) clearInterval(this.timer);
     if (!this.workspaceKey) {
-      this.lastError = "RELAY_WORKSPACE_KEY is not configured";
+      this.inboxError = "RELAY_WORKSPACE_KEY is not configured";
       return;
     }
     this.connecting = true;
@@ -62,8 +67,10 @@ export class RelayBridge {
         workspaceKey: this.workspaceKey,
         // Persist explicit metadata ourselves; disable ambient per-process injection.
         sessionRef: "",
+        // Polling owns retries and must preserve the server's Retry-After deadline.
+        retryPolicy: { maxRetries: 0 },
         onError: () => {
-          this.lastError = "Relay transport error";
+          this.inboxError = "Relay transport error";
         },
       });
       const token =
@@ -102,9 +109,11 @@ export class RelayBridge {
         );
       }
       await this.tick();
-      if (!this.stopped) this.timer = setInterval(() => void this.tick(), 1000);
+      if (!this.stopped) this.timer = setInterval(() => void this.tick(), 5000);
     } catch (error) {
-      this.lastError = `Relay initialization: ${safeRelayErrorMessage(error)}`;
+      const delay = this.inboxRetry.failed(error);
+      this.inboxError = `Relay initialization: ${safeRelayErrorMessage(error)}`;
+      console.error(`${this.inboxError}; retry after ${delay} ms`);
       this.client = undefined;
       for (const unsubscribe of this.unsubscribers) unsubscribe();
       this.unsubscribers = [];
@@ -124,7 +133,7 @@ export class RelayBridge {
     return task;
   }
   private async drain(): Promise<void> {
-    if (this.busy || this.stopped || !this.relay || !this.client) return;
+    if (this.busy || this.stopped || !this.relay || !this.client || !this.inboxRetry.ready()) return;
     this.busy = true;
     try {
       if (
@@ -214,23 +223,31 @@ export class RelayBridge {
         }
         if (lastIncoming) await this.client.messages.markRead(lastIncoming);
       }
-      this.lastError = undefined;
+      this.inboxError = undefined;
+      this.inboxRetry.succeeded();
       this.lastSuccess = Date.now();
       // Notification latency must never block the control-command inbox.
-      if (!this.publishTask) {
+      if (!this.publishTask && this.publishRetry.ready()) {
         this.publishTask = this.publishEvents()
-          .catch(() => {
-            this.lastError = "Relay event notification unavailable";
+          .then(() => {
+            this.publishRetry.succeeded();
+            this.publishError = undefined;
+          })
+          .catch((error: unknown) => {
+            this.publishRetry.failed(error);
+            this.publishError = `Relay event notification: ${safeRelayErrorMessage(error)}`;
           })
           .finally(() => {
             this.publishTask = undefined;
           });
       }
     } catch (error) {
-      this.lastError =
+      const delay = this.inboxRetry.failed(error);
+      this.inboxError =
         error instanceof Error && error.message.includes("identity changed")
           ? error.message
           : `Relay: ${safeRelayErrorMessage(error)}`;
+      console.error(`${this.inboxError}; retry after ${delay} ms`);
     } finally {
       this.busy = false;
     }

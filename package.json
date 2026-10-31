@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun server/main.ts",
     "check": "tsc --noEmit",
-    "test": "bun test core",
+    "test": "bun test core shared",
     "test:integration": "bun test actors server",
     "setup:relay": "bun server/relay-setup.ts",
     "test:relay": "bun server/relay-smoke.ts"
