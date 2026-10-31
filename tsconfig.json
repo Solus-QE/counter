@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "useDefineForClassFields": true,
+    "skipLibCheck": true,
+    "types": ["bun"]
+  },
+  "include": [
+    "shared/**/*.ts",
+    "core/**/*.ts",
+    "actors/**/*.ts",
+    "server/**/*.ts"
+  ]
+}

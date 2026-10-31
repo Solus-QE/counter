@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Counterwhorl — Autonomous Agent Recovery</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-lifecycle="connecting">
+    <div class="app-frame">
+      <!-- THIN SCIENTIFIC HEADER -->
+      <header class="topbar" role="banner">
+        <div class="topbar-left">
+          <div class="brand-cluster">
+            <span class="wordmark">Counterwhorl</span>
+            <span class="product-subtitle">Autonomous Agent Recovery</span>
+          </div>
+
+          <span class="sep" aria-hidden="true">/</span>
+
+          <div
+            id="lifecycle-badge"
+            class="status-indicator state-connecting"
+            aria-live="polite"
+          >
+            <span class="status-dot"></span>
+            <span id="lifecycle-label" class="status-name">Connecting</span>
+          </div>
+
+          <span id="lifecycle-detail" class="status-summary">
+            Connecting to Terse runtime…
+          </span>
+        </div>
+
+        <div class="topbar-right">
+          <div class="link-indicators" aria-label="Infrastructure links">
+            <span
+              id="health-terse"
+              class="link-item link-unknown"
+              title="Terse Durable Actor Runtime"
+            >
+              <i class="link-dot"></i>
+              <span>Terse</span>
+              <b id="health-terse-val" class="link-state">sync</b>
+            </span>
+            <span
+              id="health-relay"
+              class="link-item link-unknown"
+              title="Agent Relay Transport Bridge"
+            >
+              <i class="link-dot"></i>
+              <span>Relay</span>
+              <b id="health-relay-val" class="link-state">sync</b>
+            </span>
+          </div>
+
+          <div class="control-bar" role="toolbar" aria-label="Experiment controls">
+            <button
+              id="btn-start"
+              class="ctrl-btn"
+              type="button"
+              title="POST /api/missions — Initialize autonomous flight toward target +g"
+            >
+              Start Mission
+            </button>
+
+            <div class="popover-anchor">
+              <button
+                id="btn-destination"
+                class="ctrl-btn"
+                type="button"
+                aria-expanded="false"
+                aria-controls="destination-drawer"
+              >
+                Change Target
+              </button>
+
+              <!-- ANCHORED TARGET ATTITUDE POPOVER -->
+              <div id="destination-drawer" class="dest-popover" hidden>
+                <div class="popover-header">
+                  <span class="popover-title">Target attitude (+g)</span>
+                  <button
+                    id="btn-close-drawer"
+                    type="button"
+                    class="icon-close"
+                    aria-label="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div class="preset-list">
+                  <button
+                    type="button"
+                    class="preset-chip active"
+                    data-preset="default"
+                  >
+                    Default (+X → +Z)
+                  </button>
+                  <button type="button" class="preset-chip" data-preset="north">
+                    Zenith (+Y)
+                  </button>
+                  <button
+                    type="button"
+                    class="preset-chip"
+                    data-preset="oblique"
+                  >
+                    Oblique ([1,1,1]/√3)
+                  </button>
+                  <button type="button" class="preset-chip" data-preset="dusk">
+                    Equatorial (−Y)
+                  </button>
+                  <button
+                    type="button"
+                    class="preset-chip"
+                    data-preset="antipode_start"
+                  >
+                    Start at blind spot (−Z → +Z)
+                  </button>
+                </div>
+
+                <div class="slider-stack">
+                  <label class="slider-field">
+                    <span>Azimuth λ</span>
+                    <input
+                      id="dest-az"
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="1"
+                      value="0"
+                    />
+                    <output id="dest-az-out" class="mono">+0°</output>
+                  </label>
+                  <label class="slider-field">
+                    <span>Elevation φ</span>
+                    <input
+                      id="dest-el"
+                      type="range"
+                      min="-90"
+                      max="90"
+                      step="1"
+                      value="90"
+                    />
+                    <output id="dest-el-out" class="mono">+90°</output>
+                  </label>
+                </div>
+
+                <div class="popover-vectors">
+                  <div class="pv-row">
+                    <span>Target +g</span>
+                    <code id="preview-goal" class="mono text-green">[+0.000, +0.000, +1.000]</code>
+                  </div>
+                  <div class="pv-row">
+                    <span>Blind spot −g</span>
+                    <code id="preview-antipode" class="mono text-red">[+0.000, +0.000, −1.000]</code>
+                  </div>
+                  <div class="pv-row">
+                    <span>Rescue axis +b</span>
+                    <code id="preview-rescue" class="mono text-violet">[+1.000, +0.000, +0.000]</code>
+                  </div>
+                </div>
+
+                <p class="popover-note">
+                  Click anywhere on the sphere while open to pick a unit vector.
+                </p>
+
+                <div class="popover-footer">
+                  <button
+                    id="btn-apply-destination"
+                    type="button"
+                    class="ctrl-btn ctrl-solid full-width"
+                  >
+                    Set target +g
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <button
+              id="btn-reset"
+              class="ctrl-btn ctrl-quiet"
+              type="button"
+              title="Reset current experiment view"
+            >
+              Reset
+            </button>
+
+            <span class="ctrl-divider" aria-hidden="true"></span>
+
+            <!-- SINGLE PRIMARY EXPERIMENT ACTION -->
+            <button
+              id="btn-break"
+              class="ctrl-btn ctrl-primary-break"
+              type="button"
+              title="Force spacecraft onto the antipodal blind spot (−g) to trigger autonomous Agent Relay recovery"
+            >
+              Break Navigator
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- SLIM DIAGNOSTIC STRIP (SHOWN ONLY FOR REAL ERRORS / DISCONNECTED RELAY DURING RUN) -->
+      <div id="alert-banner" class="error-strip" role="alert" hidden>
+        <div class="error-strip-body">
+          <span id="alert-code" class="error-code mono">ERROR</span>
+          <span id="alert-message" class="error-text"></span>
+        </div>
+        <button
+          id="btn-dismiss-alert"
+          class="icon-close"
+          type="button"
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
+      </div>
+
+      <!-- MAIN SINGLE-SCREEN WORKSPACE -->
+      <div class="workspace">
+        <!-- LEFT PRIMARY PANE: DOMINANT SPHERE (~60% WORKSPACE) + PROMINENT LIVE PROTOCOL TIMELINE -->
+        <main class="primary-pane">
+          <section
+            class="globe-stage"
+            id="sphere-stage"
+            aria-label="Unit sphere attitude visualization"
+          >
+            <!-- SPARSE TOP-LEFT EXPERIMENT READOUT -->
+            <div class="globe-overlay overlay-top-left">
+              <div id="hud-authority-box" class="globe-authority auth-standby">
+                <span id="hud-kicker" class="hud-kicker">SPATIAL ATTITUDE · S²</span>
+                <strong id="hud-authority-title">Standby</strong>
+                <span id="hud-authority-sub" class="hud-sub">
+                  Click Break Navigator to demonstrate autonomous recovery
+                </span>
+              </div>
+            </div>
+
+            <!-- SPARSE TOP-RIGHT VIEW CONTROLS (NASA EYES STYLE — NEVER COLLIDES WITH BOTTOM LEGEND) -->
+            <div class="globe-overlay overlay-top-right">
+              <div
+                class="view-controls"
+                role="toolbar"
+                aria-label="Projection and camera controls"
+              >
+                <div class="seg-group">
+                  <button
+                    type="button"
+                    class="seg-btn active"
+                    data-proj="3d"
+                  >
+                    3D
+                  </button>
+                  <button type="button" class="seg-btn" data-proj="2d">
+                    2D
+                  </button>
+                </div>
+                <div class="seg-group">
+                  <button
+                    type="button"
+                    class="seg-btn active"
+                    data-cam="orbit"
+                  >
+                    Orbit
+                  </button>
+                  <button type="button" class="seg-btn" data-cam="follow">
+                    Track
+                  </button>
+                  <button type="button" class="seg-btn" data-cam="blind">
+                    −g
+                  </button>
+                  <button type="button" class="seg-btn" data-cam="goal">
+                    +g
+                  </button>
+                  <button type="button" class="seg-btn" data-cam="rescue">
+                    Plane
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  id="btn-field-mode"
+                  class="seg-btn seg-single"
+                >
+                  Field: Nav
+                </button>
+              </div>
+            </div>
+
+            <!-- HIGH-DPI ATTITUDE CANVAS -->
+            <canvas
+              id="sphere-canvas"
+              aria-label="Unit sphere attitude control visualization"
+            ></canvas>
+
+            <!-- SPARSE BOTTOM-LEFT LEGEND -->
+            <div class="globe-overlay overlay-bottom-left">
+              <div class="minimal-legend">
+                <span><i class="dot dot-sat"></i>Spacecraft x</span>
+                <span><i class="dot dot-goal"></i>Target +g</span>
+                <span><i class="dot dot-blind"></i>Blind spot −g (30° cone)</span>
+                <span><i class="dot dot-nav"></i>Navigator</span>
+                <span><i class="dot dot-res"></i>Rescuer</span>
+              </div>
+            </div>
+
+            <!-- TARGET PICKING PROMPT (SHOWN ONLY WHEN CHANGE TARGET POPOVER IS OPEN) -->
+            <div
+              id="picking-banner"
+              class="globe-overlay overlay-bottom-right picking-prompt"
+              hidden
+            >
+              Click sphere to pick target +g
+            </div>
+          </section>
+
+          <!-- COMPACT, PROMINENT LIVE PROTOCOL TIMELINE -->
+          <section
+            class="protocol-panel"
+            aria-label="Live Agent Relay and Terse protocol timeline"
+          >
+            <header class="protocol-header">
+              <div class="protocol-title-group">
+                <span class="protocol-dot" id="protocol-live-dot"></span>
+                <h2 class="protocol-title">Live Protocol Timeline</h2>
+              </div>
+
+              <div class="protocol-kpis" aria-label="Live protocol summary">
+                <div class="pk-item">
+                  <span class="pk-label">Status</span>
+                  <span id="tl-status" class="pk-val">Ready</span>
+                </div>
+                <div class="pk-item">
+                  <span class="pk-label">Pilot</span>
+                  <span id="tl-pilot" class="pk-val">Standby</span>
+                </div>
+                <div class="pk-item" id="cell-revision">
+                  <span class="pk-label">Terse</span>
+                  <span id="tl-revision" class="pk-val mono">r0 · e0</span>
+                </div>
+                <div class="pk-item">
+                  <span class="pk-label">Relay</span>
+                  <span id="tl-relay-count" class="pk-val mono">0 msgs</span>
+                </div>
+                <div class="pk-item">
+                  <span class="pk-label">Latency</span>
+                  <span id="tl-latency" class="pk-val mono">—</span>
+                </div>
+              </div>
+            </header>
+
+            <div class="protocol-cols" aria-hidden="true">
+              <span>Terse rev</span>
+              <span>Authority</span>
+              <span>Protocol event</span>
+              <span>Agent Relay ID</span>
+              <span class="col-end">UTC</span>
+            </div>
+
+            <div
+              id="protocol-timeline-list"
+              class="protocol-stream"
+              role="log"
+              aria-live="polite"
+            >
+              <div class="console-empty">
+                No protocol events yet — click <strong>Break Navigator</strong> to observe real Agent Relay handoff and Terse epoch fencing.
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <!-- RIGHT SIDEBAR: RECOVERY STATE + AUTONOMOUS PILOTS + COLLAPSIBLE TECHNICAL INSPECTION -->
+        <aside class="sidebar" aria-label="Autonomous recovery state and agent status">
+          <!-- PANEL 1: 7-STAGE AUTONOMOUS RECOVERY STATE -->
+          <section id="card-handoff" class="side-section">
+            <div class="section-head">
+              <h2 class="section-title">Recovery State</h2>
+              <span id="recovery-gate-pill" class="state-tag tag-neutral mono">
+                Idle
+              </span>
+            </div>
+
+            <ol
+              id="recovery-checklist"
+              class="recovery-stepper"
+              aria-label="Autonomous recovery progression"
+            >
+              <li class="r-step is-pending" data-step-id="navigator_active">
+                <span class="r-marker" aria-hidden="true">1</span>
+                <div class="r-copy">
+                  <span class="r-title">Navigator active</span>
+                  <span class="r-detail">Autonomous geodesic steering toward target +g</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="blind_spot_detected">
+                <span class="r-marker" aria-hidden="true">2</span>
+                <div class="r-copy">
+                  <span class="r-title">Mathematical blind spot detected</span>
+                  <span class="r-detail">Navigator gradient vanishes at exact antipode (−g)</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="recovery_requested">
+                <span class="r-marker" aria-hidden="true">3</span>
+                <div class="r-copy">
+                  <span class="r-title">Recovery requested via Agent Relay</span>
+                  <span class="r-detail">@navigator dispatches authenticated request to @rescuer</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="rescuer_accepts">
+                <span class="r-marker" aria-hidden="true">4</span>
+                <div class="r-copy">
+                  <span class="r-title">Rescuer accepts responsibility</span>
+                  <span class="r-detail">@rescuer selects orthogonal escape trajectory</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="terse_authorizes">
+                <span class="r-marker" aria-hidden="true">5</span>
+                <div class="r-copy">
+                  <span class="r-title">Terse authorizes movement</span>
+                  <span class="r-detail">Durable actor fences control epoch &amp; validates escape</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="navigator_resumes">
+                <span class="r-marker" aria-hidden="true">6</span>
+                <div class="r-copy">
+                  <span class="r-title">Navigator resumes</span>
+                  <span class="r-detail">Terse commits control_returned past 30° escape cone</span>
+                </div>
+              </li>
+              <li class="r-step is-pending" data-step-id="mission_completed">
+                <span class="r-marker" aria-hidden="true">7</span>
+                <div class="r-copy">
+                  <span class="r-title">Mission completed</span>
+                  <span class="r-detail">Spacecraft attitude locked within 10⁻⁴ rad of target</span>
+                </div>
+              </li>
+            </ol>
+
+            <p id="terse-gate-note" class="handoff-caption">
+              Confirmed strictly after Terse commits <code>control_returned</code>.
+            </p>
+          </section>
+
+          <!-- PANEL 2: AUTONOMOUS AGENTS SUMMARY -->
+          <section id="card-pilots" class="side-section">
+            <div class="section-head">
+              <h2 class="section-title">Autonomous Agents</h2>
+              <span id="meta-authority" class="state-tag tag-neutral">
+                Standby
+              </span>
+            </div>
+
+            <div class="pilot-stack">
+              <!-- @navigator -->
+              <div id="card-navigator" class="pilot-card">
+                <div class="pilot-card-top">
+                  <span class="pilot-name">
+                    <i class="dot dot-nav"></i>@navigator
+                  </span>
+                  <span id="nav-status-pill" class="state-tag tag-cyan">
+                    Standby
+                  </span>
+                </div>
+                <div class="pilot-metric-line">
+                  <span class="pm-label">Steering gradient</span>
+                  <span id="nav-summary" class="pm-val mono">
+                    100% · 90.0° to +g
+                  </span>
+                </div>
+                <div class="hairline-meter">
+                  <div
+                    id="gauge-nav-bar"
+                    class="meter-fill fill-cyan"
+                    style="width: 100%"
+                  ></div>
+                </div>
+                <div id="nav-stall-banner" class="inline-notice" hidden>
+                  <span id="nav-stall-text"></span>
+                </div>
+              </div>
+
+              <!-- @rescuer -->
+              <div id="card-rescuer" class="pilot-card">
+                <div class="pilot-card-top">
+                  <span class="pilot-name">
+                    <i class="dot dot-res"></i>@rescuer
+                  </span>
+                  <span id="res-status-pill" class="state-tag tag-neutral">
+                    Standby
+                  </span>
+                </div>
+                <div class="pilot-metric-line">
+                  <span class="pm-label">30° blind-spot clearance</span>
+                  <span id="res-escape-readout" class="pm-val mono">
+                    Clear (+g)
+                  </span>
+                </div>
+                <div class="hairline-meter meter-with-tick">
+                  <div
+                    id="res-escape-fill"
+                    class="meter-fill fill-green"
+                    style="width: 100%"
+                  ></div>
+                  <i
+                    class="meter-tick"
+                    style="left: 50%"
+                    title="Escape norm threshold ||v_nav|| ≥ 0.50 (30° cone)"
+                  ></i>
+                </div>
+                <div class="pilot-metric-line pilot-subline">
+                  <span class="pm-label">Escape planner</span>
+                  <span id="res-decision" class="pm-val mono">Standby</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- PANEL 3: COLLAPSIBLE TECHNICAL INSPECTION (RAW VECTORS & SCALARS) -->
+          <details id="tech-inspection" class="tech-details">
+            <summary class="tech-summary">
+              <span class="tech-summary-title">Technical inspection</span>
+              <span class="tech-summary-meta mono">S² coordinates &amp; norms</span>
+            </summary>
+
+            <div class="tech-body">
+              <div class="data-rows">
+                <div class="data-row">
+                  <span class="row-label">Run ID</span>
+                  <button
+                    id="meta-run-btn"
+                    class="row-val mono btn-link"
+                    type="button"
+                    title="Copy full run ID"
+                  >
+                    <span id="meta-run-id">—</span>
+                  </button>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Handoff / Proposal</span>
+                  <span class="row-val mono">
+                    <span id="res-req-id">—</span> / <span id="res-prop-id">—</span>
+                  </span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Confirmed recoveries</span>
+                  <span id="metric-recoveries" class="row-val mono">0</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Steps (nav / res)</span>
+                  <span id="metric-moves" class="row-val mono">0 / 0</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Geodesic arc swept</span>
+                  <span id="metric-arc" class="row-val mono">0.000 rad</span>
+                </div>
+              </div>
+
+              <div class="tech-divider"></div>
+
+              <div class="data-rows">
+                <div class="data-row">
+                  <span class="row-label">Spacecraft x</span>
+                  <span id="hud-pos" class="row-val mono">[+1.0000, +0.0000, +0.0000]</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Target +g</span>
+                  <span id="hud-goal" class="row-val mono text-green">[+0.0000, +0.0000, +1.0000]</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Blind spot −g</span>
+                  <span id="hud-blind" class="row-val mono text-red">[+0.0000, +0.0000, −1.0000]</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Rescue axis +b</span>
+                  <span id="res-axis" class="row-val mono text-violet">[+1.000, +0.000, +0.000]</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Tangent u_nav</span>
+                  <span id="nav-tangent" class="row-val mono">[+0.000, +0.000, +1.000]</span>
+                </div>
+              </div>
+
+              <div class="tech-divider"></div>
+
+              <div class="data-rows">
+                <div class="data-row">
+                  <span class="row-label">Navigator ||v_nav||</span>
+                  <span id="nav-norm" class="row-val mono text-cyan">1.000000</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Rescuer ||v_res||</span>
+                  <span id="res-norm" class="row-val mono text-violet">0.000000</span>
+                </div>
+                <div class="hairline-meter">
+                  <div
+                    id="gauge-res-bar"
+                    class="meter-fill fill-violet"
+                    style="width: 0%"
+                  ></div>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Supremum max norm</span>
+                  <span class="row-val mono"><span id="gauge-sup-val">1.0000</span> ≥ 0.7071</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Angular error θ</span>
+                  <span id="nav-angle" class="row-val mono">1.5708 rad (90.0°)</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Alignment g · x</span>
+                  <span id="nav-dot" class="row-val mono">+0.0000</span>
+                </div>
+                <div class="data-row">
+                  <span class="row-label">Step α</span>
+                  <span id="nav-alpha" class="row-val mono">0.2000 rad</span>
+                </div>
+              </div>
+
+              <div class="sparkline-frame">
+                <div class="sparkline-caption mono">
+                  <span>Trajectory field norms (cyan ||v_nav|| · violet ||v_res||)</span>
+                </div>
+                <canvas id="sparkline-canvas" width="348" height="52"></canvas>
+              </div>
+            </div>
+          </details>
+        </aside>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

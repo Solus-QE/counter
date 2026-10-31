@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun"]
+  },
+  "include": [
+    "./**/*.ts",
+    "../shared/**/*.ts",
+    "../core/**/*.ts"
+  ]
+}

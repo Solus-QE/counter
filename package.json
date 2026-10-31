@@ -1,0 +1,27 @@
+{
+  "name": "counterwhorl",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun server/main.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test core",
+    "test:integration": "bun test actors server",
+    "setup:relay": "bun server/relay-setup.ts",
+    "test:relay": "bun server/relay-smoke.ts"
+  },
+  "dependencies": {
+    "@agent-relay/sdk": "15.0.1",
+    "durable-actors": "0.14.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bun": "^1.4.2",
+    "typescript": "~5.9.3"
+  },
+  "allowScripts": {
+    "bun@1.4.4": true,
+    "esbuild@0.28.2": true
+  }
+}
