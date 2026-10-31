@@ -40,3 +40,22 @@ If `ANTHROPIC_API_KEY` is set (disable with `RESCUER_LLM=0`; model `RESCUER_LLM_
 Tuning: `AGENT_POLL_MS` (500), `NAVIGATOR_STEP_MS` (750), `RESCUER_STEP_MS` (300), `AGENT_PEER_RESEND_MS` (15000), `AGENT_INBOX_POLL_MS` (10000).
 
 Relay retry handling uses the server's `Retry-After` deadline and jittered exponential backoff. SDK automatic retries are disabled where the application owns retries, so they do not multiply each other. Temporary setup failures keep the workers waiting rather than exiting. Failed inbox reads leave live listeners running. The coordinator polls every five seconds and backs off inbox and notification failures separately; health continues to report actual service errors. HTTP 503 `database_overloaded` is a Relay service failure and may still delay both requests and completion messages.
+
+## Self-hosted Relay (branch `self-hosted-relay`)
+
+Hosted Agent Relay can be slow under load. The same code runs against the official self-hosted
+Relaycast engine when `RELAY_BASE_URL` is set; unset, everything uses hosted `cast.agentrelay.com`.
+The engine's SQLite module needs Node 22 LTS (it does not compile on Node 26).
+
+```sh
+# once: engine (Node 22) in its own folder
+mkdir -p ~/relaycast && cd ~/relaycast && npm init -y && npm i @relaycast/engine@12.3.0
+node node_modules/.bin/relaycast-engine --db ./relaycast.db --port 8787     # keep running
+
+# in the repo, with the engine running
+export RELAY_BASE_URL=http://127.0.0.1:8787
+npm run setup:relay            # once: local workspace + identities
+npm run dev
+npx bun agents/rescuer.ts
+npx bun agents/navigator.ts
+```
